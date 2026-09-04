@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from app.project.manager import ProjectManager
 
 from .layout import make_resizable_splitter, make_scrollable_panel
+from .pages.analysis_page import AnalysisPage
 from .pages.association_page import AssociationPage
 from .pages.calibration_page import CalibrationPage
 from .pages.correction_page import CorrectionPage
@@ -81,6 +82,8 @@ class MainWindow(QMainWindow):
                 if page_id == "correction_2d"
                 else AssociationPage()
                 if page_id == "association"
+                else AnalysisPage()
+                if page_id == "analysis"
                 else self._build_page(page_id, label)
             )
             self._pages[page_id] = page
@@ -176,6 +179,7 @@ class MainWindow(QMainWindow):
             "calibration": "查看当前标定输入和相机质量诊断。",
             "synchronization": "查看同步帧与原视频帧的映射关系。",
             "association": "诊断人物轨迹、查看候选并人工确认语义关联。",
+            "analysis": "计算位置、速度、加速度和角度等可追溯运动学指标。",
         }
         return descriptions.get(page_id, "管理当前项目的阶段数据和操作。")
 
@@ -230,6 +234,9 @@ class MainWindow(QMainWindow):
         association_page = self._pages.get("association")
         if isinstance(association_page, AssociationPage):
             association_page.set_project(project)
+        analysis_page = self._pages.get("analysis")
+        if isinstance(analysis_page, AnalysisPage):
+            analysis_page.set_project(project)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
 
     @property
@@ -276,4 +283,7 @@ class MainWindow(QMainWindow):
         association_page = self._pages.get("association")
         if isinstance(association_page, AssociationPage):
             association_page.close()
+        analysis_page = self._pages.get("analysis")
+        if isinstance(analysis_page, AnalysisPage):
+            analysis_page.close()
         event.accept()
