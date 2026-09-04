@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "motion-analysis-studio"
+version = "0.1.0"
+description = "A recoverable multi-camera motion analysis desktop application"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+desktop = ["PySide6>=6.6"]
+analysis = ["numpy>=1.26", "opencv-python>=4.8"]
+build = ["pyinstaller>=6.0"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]

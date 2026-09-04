@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+outputs/
+work/
+build/
+dist/
+*.egg-info/
+*.log
+*.mp4
+*.mov
+*.avi
+*.mkv
+project-data/
+test-projects/
