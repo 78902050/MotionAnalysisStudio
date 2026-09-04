@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from app.project.manager import ProjectManager
 
 from .layout import make_resizable_splitter, make_scrollable_panel
+from .pages.calibration_page import CalibrationPage
 from .pages.correction_page import CorrectionPage
 from .style import apply_style
 from .task_center import TaskStatusStrip
@@ -69,7 +70,13 @@ class MainWindow(QMainWindow):
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("page_stack")
         for page_id, label in PAGE_LABELS:
-            page = CorrectionPage() if page_id == "correction_2d" else self._build_page(page_id, label)
+            page = (
+                CalibrationPage()
+                if page_id == "calibration"
+                else CorrectionPage()
+                if page_id == "correction_2d"
+                else self._build_page(page_id, label)
+            )
             self._pages[page_id] = page
             self.page_stack.addWidget(page)
         self.workspace_splitter = make_resizable_splitter(self.navigation, self.page_stack)
@@ -197,6 +204,9 @@ class MainWindow(QMainWindow):
             "未开始",
         )
         self.stage_label.setText(f"阶段：{active_stage}")
+        calibration_page = self._pages.get("calibration")
+        if isinstance(calibration_page, CalibrationPage):
+            calibration_page.set_project(project)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
 
     @property
