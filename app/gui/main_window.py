@@ -1,7 +1,5 @@
 """Resizable desktop shell for the motion-analysis workspace."""
 
-from typing import Iterable
-
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -14,7 +12,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -23,9 +20,9 @@ from PySide6.QtWidgets import (
 from app.project.manager import ProjectManager
 
 from .layout import make_resizable_splitter, make_scrollable_panel
+from .pages.correction_page import CorrectionPage
 from .style import apply_style
 from .task_center import TaskStatusStrip
-
 
 PAGE_LABELS: tuple[tuple[str, str], ...] = (
     ("project", "项目"),
@@ -72,7 +69,7 @@ class MainWindow(QMainWindow):
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("page_stack")
         for page_id, label in PAGE_LABELS:
-            page = self._build_page(page_id, label)
+            page = CorrectionPage() if page_id == "correction_2d" else self._build_page(page_id, label)
             self._pages[page_id] = page
             self.page_stack.addWidget(page)
         self.workspace_splitter = make_resizable_splitter(self.navigation, self.page_stack)
