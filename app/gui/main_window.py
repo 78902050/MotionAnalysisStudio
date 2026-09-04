@@ -24,6 +24,7 @@ from .pages.analysis_page import AnalysisPage
 from .pages.association_page import AssociationPage
 from .pages.calibration_page import CalibrationPage
 from .pages.correction_page import CorrectionPage
+from .pages.events_page import EventsPage
 from .pages.synchronization_page import SynchronizationPage
 from .style import apply_style
 from .task_center import TaskStatusStrip
@@ -84,6 +85,8 @@ class MainWindow(QMainWindow):
                 if page_id == "association"
                 else AnalysisPage()
                 if page_id == "analysis"
+                else EventsPage()
+                if page_id == "events"
                 else self._build_page(page_id, label)
             )
             self._pages[page_id] = page
@@ -180,6 +183,7 @@ class MainWindow(QMainWindow):
             "synchronization": "查看同步帧与原视频帧的映射关系。",
             "association": "诊断人物轨迹、查看候选并人工确认语义关联。",
             "analysis": "计算位置、速度、加速度和角度等可追溯运动学指标。",
+            "events": "按规则检测动作事件、构建周期并保留人工调整历史。",
         }
         return descriptions.get(page_id, "管理当前项目的阶段数据和操作。")
 
@@ -237,6 +241,9 @@ class MainWindow(QMainWindow):
         analysis_page = self._pages.get("analysis")
         if isinstance(analysis_page, AnalysisPage):
             analysis_page.set_project(project)
+        events_page = self._pages.get("events")
+        if isinstance(events_page, EventsPage):
+            events_page.set_project(project)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
 
     @property
@@ -286,4 +293,7 @@ class MainWindow(QMainWindow):
         analysis_page = self._pages.get("analysis")
         if isinstance(analysis_page, AnalysisPage):
             analysis_page.close()
+        events_page = self._pages.get("events")
+        if isinstance(events_page, EventsPage):
+            events_page.close()
         event.accept()
