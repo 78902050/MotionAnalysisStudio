@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import zipfile
@@ -21,6 +20,10 @@ _REQUIRED_MODULES = {
     "Pose2Sim": "Pose2Sim",
     "Caliscope": "caliscope",
 }
+# The one-file desktop bundle embeds the UI runtime. Analysis engines and the
+# build tool remain external capabilities and are checked by the full install
+# validation path instead of being falsely required by the frozen smoke test.
+_EMBEDDED_MODULES = {"PySide6": "PySide6"}
 _PACKAGE_NAMES = {
     "PySide6": "PySide6",
     "NumPy": "numpy",
@@ -33,13 +36,14 @@ _MAX_LOG_BYTES = 2 * 1024 * 1024
 _WINDOWS_PATH = re.compile(r"(?i)[a-z]:[\\/][^\r\n\"']+")
 
 
-def validate_installation() -> list[str]:
+def validate_installation(include_external: bool = True) -> list[str]:
     """Return actionable missing-capability messages; an empty list means ready."""
 
     issues: list[str] = []
     if sys.version_info < (3, 12):
         issues.append(f"Python 3.12 or newer is required; found {sys.version.split()[0]}")
-    for label, module_name in _REQUIRED_MODULES.items():
+    required = _REQUIRED_MODULES if include_external else _EMBEDDED_MODULES
+    for label, module_name in required.items():
         try:
             available = find_spec(module_name) is not None
         except (ImportError, ModuleNotFoundError, ValueError):

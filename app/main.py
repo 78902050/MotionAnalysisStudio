@@ -13,7 +13,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--smoke-test", action="store_true", help="validate runtime capabilities without opening the UI")
     arguments = parser.parse_args(argv)
     if arguments.smoke_test:
-        issues = validate_installation()
+        issues = validate_installation(include_external=False)
         if issues:
             for issue in issues:
                 print(issue, file=sys.stderr)
