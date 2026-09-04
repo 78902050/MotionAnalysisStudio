@@ -18,11 +18,14 @@ from app.media.frame_provider import MultiViewFrameProvider
 
 class _FakeCapture:
     thread_ids: list[int] = []
+    instances: list["_FakeCapture"] = []
+    read_delay = 0.002
 
     def __init__(self, path: str) -> None:
         self.path = path
         self.position = 0
         self.opened = True
+        type(self).instances.append(self)
 
     def isOpened(self) -> bool:
         return self.opened
@@ -33,7 +36,7 @@ class _FakeCapture:
 
     def read(self):
         type(self).thread_ids.append(threading.get_ident())
-        time.sleep(0.002)
+        time.sleep(type(self).read_delay)
         return True, np.full((8, 8, 3), self.position % 255, dtype=np.uint8)
 
     def release(self) -> None:
@@ -47,6 +50,8 @@ class FrameProviderTests(unittest.TestCase):
 
     def setUp(self) -> None:
         _FakeCapture.thread_ids.clear()
+        _FakeCapture.instances.clear()
+        _FakeCapture.read_delay = 0.002
         self.provider = MultiViewFrameProvider(cache_capacity=5)
         self.provider.set_project(
             "project-a",
@@ -106,6 +111,32 @@ class FrameProviderTests(unittest.TestCase):
         self.assertGreater(len(heartbeat_times), 20)
         gaps = [right - left for left, right in zip(heartbeat_times, heartbeat_times[1:])]
         self.assertLess(max(gaps), 0.25)
+
+    def test_four_cameras_decode_in_parallel(self) -> None:
+        _FakeCapture.read_delay = 0.15
+        addresses = [FrameAddress(f"cam0{index}", "raw", 0) for index in range(1, 5)]
+
+        started = time.monotonic()
+        with patch("app.media.frame_provider.cv2.VideoCapture", _FakeCapture):
+            self.provider.prefetch(addresses)
+            self.assertTrue(self._wait_for(lambda: len(self.ready) == 4, timeout_ms=1200))
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.45, "four camera reads were serialized")
+        self.assertEqual(len(set(_FakeCapture.thread_ids)), 4)
+
+    def test_project_switch_releases_previous_video_capture(self) -> None:
+        with patch("app.media.frame_provider.cv2.VideoCapture", _FakeCapture):
+            self.provider.request(FrameAddress("cam01", "raw", 0))
+            self.assertTrue(self._wait_for(lambda: len(self.ready) == 1))
+            old_capture = _FakeCapture.instances[0]
+
+            self.provider.set_project("project-b", {"cam01": Path("new.mp4")})
+
+            self.assertTrue(self._wait_for(lambda: not old_capture.opened, timeout_ms=1000))
+
+    def test_close_reports_that_decoder_threads_stopped(self) -> None:
+        self.assertTrue(self.provider.close())
 
 
 if __name__ == "__main__":

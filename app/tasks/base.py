@@ -5,6 +5,9 @@ from threading import Event
 from typing import Any, Callable, Literal
 
 TaskStatus = Literal["running", "succeeded", "failed", "cancelled"]
+SupervisorTaskStatus = Literal[
+    "queued", "running", "cancelling", "completed", "failed", "cancelled"
+]
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,16 @@ class TaskResult:
     name: str
     status: TaskStatus
     value: Any = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class TaskSnapshot:
+    task_id: str
+    project_id: str
+    generation: int
+    name: str
+    status: SupervisorTaskStatus
     error: str | None = None
 
 
