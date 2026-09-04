@@ -9,9 +9,9 @@ from typing import Any
 
 class AtomicJsonStore:
     @staticmethod
-    def replace(path: Path, data: object) -> None:
+    def replace(path: Path, data: object, *, allow_nan: bool = False) -> None:
         path = Path(path)
-        payload = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+        payload = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=allow_nan) + "\n"
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
