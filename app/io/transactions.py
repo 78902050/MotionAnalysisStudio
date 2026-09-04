@@ -65,8 +65,10 @@ class ProjectTransaction:
         self._targets: set[str] = set()
         self._committed = False
 
-    def prepare_json(self, target: str | Path, data: object) -> None:
-        payload = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    def prepare_json(
+        self, target: str | Path, data: object, *, allow_nan: bool = False
+    ) -> None:
+        payload = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=allow_nan) + "\n"
         self.prepare_bytes(target, payload.encode("utf-8"))
 
     def prepare_bytes(self, target: str | Path, data: bytes) -> None:

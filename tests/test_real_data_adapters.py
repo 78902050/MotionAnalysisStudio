@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from app.analysis.model import Trajectory
+from app.correction.history import CorrectionHistory
 
 
 FIXTURES = Path("tests/fixtures/real_data")
@@ -94,6 +95,22 @@ class RealDataAdapterTests(unittest.TestCase):
                 after["people"][0]["pose_keypoints_2d"][3:],
                 before["people"][0]["pose_keypoints_2d"][3:],
             )
+            backup = (
+                pose_root.parent
+                / "corrections"
+                / "backups"
+                / "pose"
+                / "cam01_json"
+                / "cam01_000000.json"
+            )
+            self.assertTrue(backup.is_file())
+            operation = CorrectionHistory(pose_root.parent).operations()[0]
+            self.assertEqual(operation.target.address.camera, "cam01")
+            self.assertEqual(operation.target.address.frame, 0)
+            self.assertEqual(operation.target.person.raw_person_index, 0)
+            self.assertEqual(operation.target.keypoint.keypoint_name, "kp00")
+            self.assertEqual(operation.before, old)
+            self.assertEqual(operation.after, (10.0, 20.0, 1.0))
 
     def test_pose_keypoint_name_count_must_match_real_array(self) -> None:
         repository_type = self._pose_repository_type()

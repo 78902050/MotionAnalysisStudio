@@ -8,10 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from app.correction.change_set import ChangeSet, PointValue
 from app.correction.history import CorrectionHistory
 from app.correction.model import CorrectionOperation, CorrectionSource
 from app.domain.addresses import CorrectionTarget
-from app.io.atomic import AtomicJsonStore
 
 
 class PoseDocument:
@@ -25,10 +25,12 @@ class PoseDocument:
         self._saved_data = copy.deepcopy(self.data)
         self._pending_operations: list[CorrectionOperation] = []
 
-    def _locate_point(self, target: CorrectionTarget) -> dict[str, object]:
-        if target.address.camera != str(self.data.get("camera", target.address.camera)):
+    def _locate_point_in(
+        self, data: dict[str, object], target: CorrectionTarget
+    ) -> dict[str, object]:
+        if target.address.camera != str(data.get("camera", target.address.camera)):
             raise ValueError(f"pose JSON camera does not match target camera: {target.address.camera}")
-        frames = self.data.get("frames", [])
+        frames = data.get("frames", [])
         if not isinstance(frames, list):
             raise ValueError("pose JSON frames must be a list")
         frame_value = next(
@@ -70,8 +72,13 @@ class PoseDocument:
             raise ValueError("keypoint payload must be an object")
         return point
 
-    def value_at(self, target: CorrectionTarget) -> tuple[float, float, float]:
-        point = self._locate_point(target)
+    def _locate_point(self, target: CorrectionTarget) -> dict[str, object]:
+        return self._locate_point_in(self.data, target)
+
+    def _value_in(
+        self, data: dict[str, object], target: CorrectionTarget
+    ) -> PointValue:
+        point = self._locate_point_in(data, target)
         try:
             return (
                 float(point["x"]),
@@ -80,6 +87,9 @@ class PoseDocument:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("keypoint payload has invalid coordinates") from exc
+
+    def value_at(self, target: CorrectionTarget) -> tuple[float, float, float]:
+        return self._value_in(self.data, target)
 
     def set_point_value(
         self,
@@ -123,27 +133,35 @@ class PoseDocument:
         self.data = copy.deepcopy(self._saved_data)
         self._pending_operations.clear()
 
+    def change_set(self) -> ChangeSet:
+        targets = tuple(dict.fromkeys(operation.target for operation in self._pending_operations))
+        baseline = {target: self._value_in(self._saved_data, target) for target in targets}
+        current = {target: self._value_in(self.data, target) for target in targets}
+        return ChangeSet.between(baseline, current)
+
+    def has_net_changes(self) -> bool:
+        return bool(self.change_set())
+
     def save(self, note: str = "", session_id: str = "") -> tuple[int, list[str]]:
-        if not self._pending_operations:
+        changes = self.change_set()
+        if not changes:
+            self._pending_operations.clear()
             return 0, []
         history = CorrectionHistory(self.project_root)
-        history.backup_once(self.path)
         operations = [
-            operation if not note else CorrectionOperation(
-                operation_id=operation.operation_id,
-                session_id=session_id or operation.session_id,
-                target=operation.target,
-                before=operation.before,
-                after=operation.after,
+            CorrectionOperation(
+                operation_id=f"op-{uuid4().hex}",
+                session_id=session_id or self._pending_operations[-1].session_id,
+                target=change.target,
+                before=change.before,
+                after=change.after,
                 note=note,
-                created_at=operation.created_at,
-                source=operation.source,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                source="manual",
             )
-            for operation in self._pending_operations
+            for change in changes.changes
         ]
-        AtomicJsonStore.replace(self.path, self.data)
-        for operation in operations:
-            history.append(operation)
+        history.commit_pose_change(self.path, self.data, operations, create_backup=True)
         self._pending_operations.clear()
         self._saved_data = copy.deepcopy(self.data)
         return len(operations), [operation.operation_id for operation in operations]

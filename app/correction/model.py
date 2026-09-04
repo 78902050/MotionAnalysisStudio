@@ -14,6 +14,7 @@ from app.domain.addresses import (
 )
 
 CorrectionSource = Literal["manual", "restore", "migration"]
+CorrectionChangeKind = Literal["modified", "added", "removed"]
 DispositionStatus = Literal["pending", "handled", "deferred", "ignored"]
 
 
@@ -36,6 +37,7 @@ class CorrectionOperation:
     note: str
     created_at: str
     source: CorrectionSource
+    change_kind: CorrectionChangeKind = "modified"
 
     def __post_init__(self) -> None:
         for name, value in (("operation_id", self.operation_id), ("session_id", self.session_id)):
@@ -45,6 +47,8 @@ class CorrectionOperation:
             raise ValueError("created_at must not be empty")
         if self.source not in {"manual", "restore", "migration"}:
             raise ValueError(f"unknown correction source: {self.source}")
+        if self.change_kind not in {"modified", "added", "removed"}:
+            raise ValueError(f"unknown correction change kind: {self.change_kind}")
         object.__setattr__(self, "before", _value_triplet(self.before, "before"))
         object.__setattr__(self, "after", _value_triplet(self.after, "after"))
 
@@ -74,6 +78,7 @@ class CorrectionOperation:
             "note": self.note,
             "created_at": self.created_at,
             "source": self.source,
+            "change_kind": self.change_kind,
         }
 
     @classmethod
@@ -108,6 +113,7 @@ class CorrectionOperation:
             note=str(value.get("note", "")),
             created_at=value["created_at"],
             source=value["source"],
+            change_kind=value.get("change_kind", "modified"),
         )
 
 

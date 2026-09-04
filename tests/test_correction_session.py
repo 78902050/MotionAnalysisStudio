@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.correction.history import CorrectionHistory
 from app.correction.session import CorrectionSession
 from app.domain.addresses import CorrectionTarget, FrameAddress, KeypointAddress, PersonAddress
 from app.pose_editor.model import PoseDocument
@@ -87,6 +88,53 @@ class CorrectionSessionTests(unittest.TestCase):
             session.reset_frame(12)
             self.assertEqual(session.document.value_at(target), (10.0, 20.0, 0.2))
             self.assertFalse(session.has_unsaved_changes())
+
+    def test_apply_then_undo_saves_no_ghost_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self._session(root)
+            target = _target()
+
+            session.apply_point(target, 30.0, 40.0)
+            session.undo()
+            count, operation_ids = session.save()
+
+            self.assertEqual((count, operation_ids), (0, []))
+            self.assertEqual(CorrectionHistory(root).operations(), [])
+            self.assertEqual(session.document.value_at(target), (10.0, 20.0, 0.2))
+
+    def test_multiple_edits_then_undo_saves_one_net_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self._session(root)
+            target = _target()
+
+            session.apply_point(target, 30.0, 40.0)
+            session.apply_point(target, 50.0, 60.0, confidence=0.8)
+            session.undo()
+            count, _ = session.save(note="净变化")
+
+            self.assertEqual(count, 1)
+            operation = CorrectionHistory(root).operations()[0]
+            self.assertEqual(operation.before, (10.0, 20.0, 0.2))
+            self.assertEqual(operation.after, (30.0, 40.0, 1.0))
+            self.assertEqual(session.document.value_at(target), operation.after)
+
+    def test_undo_redo_history_matches_saved_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self._session(root)
+            target = _target()
+
+            session.apply_point(target, 30.0, 40.0)
+            session.undo()
+            session.redo()
+            count, _ = session.save()
+
+            self.assertEqual(count, 1)
+            operation = CorrectionHistory(root).operations()[0]
+            self.assertEqual(operation.before, (10.0, 20.0, 0.2))
+            self.assertEqual(operation.after, session.document.value_at(target))
 
 
 if __name__ == "__main__":

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
+from app.correction.history import CorrectionHistory
+from app.correction.model import CorrectionOperation
+from app.domain.addresses import CorrectionTarget, FrameAddress, KeypointAddress, PersonAddress
 from app.domain.pose2d import FramePose, PersonPose, PoseKeypoint
-from app.io.atomic import AtomicJsonStore
 
 
 class Pose2DFrameDocument:
@@ -17,12 +21,17 @@ class Pose2DFrameDocument:
         frame: int,
         keypoint_names: tuple[str, ...],
         data: dict[str, object],
+        project_root: Path,
+        model_name: str,
     ) -> None:
         self.path = Path(path)
         self.camera = camera
         self.frame = frame
         self.keypoint_names = keypoint_names
         self.data = data
+        self.project_root = Path(project_root)
+        self.model_name = model_name
+        self._baseline: dict[CorrectionTarget, tuple[float, float, float]] = {}
         self._validate()
 
     def _people(self) -> list[dict[str, object]]:
@@ -98,16 +107,70 @@ class Pose2DFrameDocument:
         values = self._keypoint_values(person_index)
         start = keypoint_index * 3
         before = tuple(float(item) for item in values[start : start + 3])
+        person = self._people()[person_index]
+        project_person_id = person.get("project_person_id")
+        track_segment_id = person.get("track_segment_id")
+        target = CorrectionTarget(
+            FrameAddress(self.camera, "pose2d", self.frame),
+            PersonAddress(
+                project_person_id if isinstance(project_person_id, str) else f"raw-{person_index}",
+                track_segment_id if isinstance(track_segment_id, str) else None,
+                person_index,
+            ),
+            KeypointAddress(self.model_name, keypoint_name, keypoint_index),
+        )
+        self._baseline.setdefault(target, before)  # first value is the save baseline
         values[start : start + 3] = normalized
         return before  # type: ignore[return-value]
 
-    def save(self) -> None:
-        AtomicJsonStore.replace(self.path, self.data, allow_nan=True)
+    def save(self, note: str = "", session_id: str = "") -> tuple[int, list[str]]:
+        now = datetime.now(timezone.utc).isoformat()
+        effective_session = session_id or f"session-{uuid4().hex}"
+        operations: list[CorrectionOperation] = []
+        for target, before in self._baseline.items():
+            values = self._keypoint_values(target.person.raw_person_index or 0)
+            index = target.keypoint.source_index
+            if index is None:
+                raise ValueError(f"keypoint has no source index: {target.keypoint.keypoint_name}")
+            start = index * 3
+            after = tuple(float(item) for item in values[start : start + 3])
+            if before == after:
+                continue
+            operations.append(
+                CorrectionOperation(
+                    operation_id=f"op-{uuid4().hex}",
+                    session_id=effective_session,
+                    target=target,
+                    before=before,
+                    after=after,  # type: ignore[arg-type]
+                    note=note,
+                    created_at=now,
+                    source="manual",
+                )
+            )
+        if not operations:
+            self._baseline.clear()
+            return 0, []
+        history = CorrectionHistory(self.project_root)
+        history.commit_pose_change(self.path, self.data, operations, create_backup=True)
+        self._baseline.clear()
+        return len(operations), [operation.operation_id for operation in operations]
 
 
 class Pose2DRepository:
-    def __init__(self, pose_root: Path, keypoint_names: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        pose_root: Path,
+        keypoint_names: tuple[str, ...],
+        *,
+        project_root: Path | None = None,
+        model_name: str = "unknown",
+    ) -> None:
         self.pose_root = Path(pose_root).resolve()
+        self.project_root = (
+            Path(project_root).resolve() if project_root is not None else self.pose_root.parent
+        )
+        self.model_name = model_name
         self.keypoint_names = tuple(keypoint_names)
         if not self.keypoint_names or any(not isinstance(name, str) or not name.strip() for name in self.keypoint_names):
             raise ValueError("keypoint names must contain non-empty strings")
@@ -129,7 +192,15 @@ class Pose2DRepository:
             raise ValueError(f"invalid Pose2Sim JSON: {candidate}") from exc
         if not isinstance(data, dict):
             raise ValueError(f"Pose2Sim JSON root must be an object: {candidate}")
-        return Pose2DFrameDocument(candidate, camera, frame, self.keypoint_names, data)
+        return Pose2DFrameDocument(
+            candidate,
+            camera,
+            frame,
+            self.keypoint_names,
+            data,
+            self.project_root,
+            self.model_name,
+        )
 
     @staticmethod
     def _find_frame(directory: Path, camera: str, frame: int) -> Path:

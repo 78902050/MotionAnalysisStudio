@@ -125,13 +125,12 @@ class CorrectionSession:
         self.document.remove_pending({operation.operation_id for operation in removed})
 
     def has_unsaved_changes(self) -> bool:
-        return bool(self.document.pending_operations)
+        return self.document.has_net_changes()
 
     def save(self, note: str = "") -> tuple[int, list[str]]:
         result = self.document.save(note=note, session_id=self.session_id)
-        if result[0]:
-            self._undo_stack.clear()
-            self._redo_stack.clear()
+        self._undo_stack.clear()
+        self._redo_stack.clear()
         return result
 
     def discard_unsaved(self) -> None:

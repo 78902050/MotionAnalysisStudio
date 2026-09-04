@@ -8,8 +8,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.domain.addresses import CorrectionTarget, FrameAddress, KeypointAddress, PersonAddress
+from app.domain.stages import StageGraph
 from app.io.atomic import AtomicJsonStore
 from app.io.jsonl import JsonlStore
+from app.io.transactions import ProjectTransaction, TransactionRecovery
+from app.project.manifest import utc_now
 
 from .model import CorrectionOperation
 
@@ -76,6 +79,18 @@ class CorrectionHistory:
     def append(self, operation: CorrectionOperation) -> None:
         self.store.append(operation.to_dict())
 
+    def serialized_with(self, operations: list[CorrectionOperation]) -> bytes:
+        records, errors = self.store.read()
+        if errors:
+            raise ValueError("invalid correction history: " + "; ".join(errors))
+        records.extend(operation.to_dict() for operation in operations)
+        payload = "".join(
+            json.dumps(record, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+            + "\n"
+            for record in records
+        )
+        return payload.encode("utf-8")
+
     def operations(self, session_id: str | None = None) -> list[CorrectionOperation]:
         records, errors = self.store.read()
         if errors:
@@ -87,11 +102,77 @@ class CorrectionHistory:
 
     def backup_path(self, json_path: Path) -> Path:
         json_path = Path(json_path)
-        camera = json_path.stem
-        return self.root / "corrections" / "backups" / "pose" / f"{camera}_json" / json_path.name
+        camera_directory = json_path.parent.name
+        if not camera_directory.endswith("_json"):
+            camera_directory = f"{json_path.stem}_json"
+        return (
+            self.root
+            / "corrections"
+            / "backups"
+            / "pose"
+            / camera_directory
+            / json_path.name
+        )
 
     def backup_once(self, json_path: Path) -> bool:
         return AtomicJsonStore.backup_once(Path(json_path), self.backup_path(Path(json_path)))
+
+    def commit_pose_change(
+        self,
+        json_path: Path,
+        data: dict[str, object],
+        operations: list[CorrectionOperation],
+        *,
+        create_backup: bool,
+    ) -> None:
+        root = self.root.resolve()
+        pose_path = Path(json_path).resolve()
+        try:
+            pose_relative = pose_path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("pose JSON must be located inside the project root") from exc
+
+        transaction = ProjectTransaction(root)
+        transaction.prepare_json(pose_relative, data, allow_nan=True)
+        transaction.prepare_bytes(
+            self.path.resolve().relative_to(root),
+            self.serialized_with(operations),
+        )
+        backup_path = self.backup_path(pose_path).resolve()
+        if create_backup and not backup_path.exists():
+            transaction.prepare_bytes(backup_path.relative_to(root), pose_path.read_bytes())
+
+        manifest_path = root / "manifest.json"
+        if manifest_path.is_file() and operations:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError("project manifest must contain an object")
+            operation_ids = [operation.operation_id for operation in operations]
+            manual_edits = manifest.setdefault("manual_pose_edits", [])
+            if not isinstance(manual_edits, list):
+                raise ValueError("manual_pose_edits must be a list")
+            manual_edits.extend(operation_ids)
+            stages = manifest.setdefault("stages", {})
+            if not isinstance(stages, dict):
+                raise ValueError("project stages must be an object")
+            for stage in StageGraph().invalidate_from(
+                "personAssociation", "confirmed 2D correction", operation_ids[0]
+            ):
+                record = stages.setdefault(stage, {})
+                if not isinstance(record, dict):
+                    raise ValueError(f"project stage must be an object: {stage}")
+                record["status"] = "stale"
+                record["generation"] = int(record.get("generation", 0)) + 1
+                record["invalidated_reason"] = "confirmed 2D correction"
+                record["invalidated_by"] = operation_ids
+            manifest["updated_at"] = utc_now()
+            transaction.prepare_json("manifest.json", manifest)
+
+        try:
+            transaction.commit()
+        except BaseException:
+            TransactionRecovery(root).recover_all()
+            raise
 
     def restore_file(self, json_path: Path, reason: str) -> int:
         json_path = Path(json_path)
@@ -126,7 +207,38 @@ class CorrectionHistory:
                 )
             )
 
-        AtomicJsonStore.replace(json_path, backup_value)
-        for operation in operations:
-            self.append(operation)
+        for key in sorted(set(original) - set(current)):
+            target, after = original[key]
+            operations.append(
+                CorrectionOperation(
+                    operation_id=f"op-{uuid4().hex}",
+                    session_id=session_id,
+                    target=target,
+                    before=after,
+                    after=after,
+                    note=reason,
+                    created_at=now,
+                    source="restore",
+                    change_kind="added",
+                )
+            )
+        for key in sorted(set(current) - set(original)):
+            target, before = current[key]
+            operations.append(
+                CorrectionOperation(
+                    operation_id=f"op-{uuid4().hex}",
+                    session_id=session_id,
+                    target=target,
+                    before=before,
+                    after=before,
+                    note=reason,
+                    created_at=now,
+                    source="restore",
+                    change_kind="removed",
+                )
+            )
+
+        if current_value == backup_value:
+            return 0
+        self.commit_pose_change(json_path, backup_value, operations, create_backup=False)
         return len(operations)

@@ -1,4 +1,6 @@
 import json
+import os
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +10,7 @@ from app.correction.history import CorrectionHistory
 from app.correction.session import CorrectionSession
 from app.domain.addresses import CorrectionTarget, FrameAddress, KeypointAddress, PersonAddress
 from app.pose_editor.model import PoseDocument
+from app.project.manager import ProjectManager
 
 
 def _pose_payload(x: float = 10.0, confidence: float = 0.2) -> dict[str, object]:
@@ -101,6 +104,100 @@ class CorrectionHistoryTests(unittest.TestCase):
                 CorrectionHistory(root).operations()
 
             self.assertIn("line 2", str(context.exception))
+
+    def test_save_transaction_rolls_back_every_project_file_on_partial_failure(self) -> None:
+        for failure_index in range(1, 5):
+            with self.subTest(failure_index=failure_index), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                ProjectManager.create(root, "事务修正")
+                pose_path = root / "pose" / "cam01.json"
+                pose_path.write_text(json.dumps(_pose_payload()), encoding="utf-8")
+                document = PoseDocument(pose_path, project_root=root)
+                session = CorrectionSession(document, project_root=root, session_id="session-1")
+                session.apply_point(_target(), 30.0, 40.0)
+                original_pose = pose_path.read_bytes()
+                original_manifest = (root / "manifest.json").read_bytes()
+                original_history = (root / "corrections" / "history.jsonl").read_bytes()
+                backup = CorrectionHistory(root).backup_path(pose_path)
+                real_replace = os.replace
+                replacements = 0
+
+                def fail_selected_replace(source, target):
+                    nonlocal replacements
+                    replacements += 1
+                    if replacements == failure_index:
+                        raise OSError("injected replacement failure")
+                    return real_replace(source, target)
+
+                with patch("app.io.transactions.os.replace", side_effect=fail_selected_replace):
+                    with self.assertRaisesRegex(OSError, "injected replacement failure"):
+                        session.save()
+
+                self.assertEqual(pose_path.read_bytes(), original_pose)
+                self.assertEqual((root / "manifest.json").read_bytes(), original_manifest)
+                self.assertEqual(
+                    (root / "corrections" / "history.jsonl").read_bytes(), original_history
+                )
+                self.assertFalse(backup.exists())
+                self.assertTrue(session.has_unsaved_changes())
+
+    def test_successful_save_updates_manifest_and_invalidates_from_person_association(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = ProjectManager.create(root, "依赖失效")
+            for stage in project.manifest["stages"].values():
+                stage["status"] = "completed"
+            project.save_manifest()
+            pose_path = root / "pose" / "cam01.json"
+            pose_path.write_text(json.dumps(_pose_payload()), encoding="utf-8")
+            session = CorrectionSession(
+                PoseDocument(pose_path, project_root=root),
+                project_root=root,
+                session_id="session-1",
+            )
+            session.apply_point(_target(), 30.0, 40.0)
+
+            count, operation_ids = session.save()
+            saved_manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(count, 1)
+            self.assertEqual(saved_manifest["stages"]["poseEstimation"]["status"], "completed")
+            self.assertEqual(
+                saved_manifest["stages"]["personAssociation"]["status"], "stale"
+            )
+            self.assertEqual(saved_manifest["stages"]["triangulation"]["status"], "stale")
+            self.assertIn(operation_ids[0], saved_manifest["manual_pose_edits"])
+
+    def test_restore_audits_added_removed_and_modified_keypoints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pose_path = root / "pose" / "cam01.json"
+            pose_path.parent.mkdir()
+            original = _pose_payload()
+            original["keypoint_names"].append("right_elbow")
+            original["frames"][0]["people"][0]["keypoints"]["right_elbow"] = {
+                "x": 15.0,
+                "y": 25.0,
+                "confidence": 0.6,
+            }
+            pose_path.write_text(json.dumps(original), encoding="utf-8")
+            history = CorrectionHistory(root)
+            self.assertTrue(history.backup_once(pose_path))
+            current = copy.deepcopy(original)
+            points = current["frames"][0]["people"][0]["keypoints"]
+            points["left_wrist"]["x"] = 99.0
+            del points["right_elbow"]
+            points["temporary_point"] = {"x": 1.0, "y": 2.0, "confidence": 0.3}
+            pose_path.write_text(json.dumps(current), encoding="utf-8")
+
+            count = history.restore_file(pose_path, "结构恢复")
+
+            self.assertEqual(count, 3)
+            self.assertEqual(
+                {operation.change_kind for operation in history.operations()},
+                {"added", "removed", "modified"},
+            )
+            self.assertEqual(json.loads(pose_path.read_text(encoding="utf-8")), original)
 
 
 if __name__ == "__main__":
