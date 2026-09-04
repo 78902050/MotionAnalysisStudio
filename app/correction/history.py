@@ -8,10 +8,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.domain.addresses import CorrectionTarget, FrameAddress, KeypointAddress, PersonAddress
-from app.domain.stages import StageGraph
 from app.io.atomic import AtomicJsonStore
 from app.io.jsonl import JsonlStore
 from app.io.transactions import ProjectTransaction, TransactionRecovery
+from app.pipeline.dependency_graph import invalidate_manifest
 from app.project.manifest import utc_now
 
 from .model import CorrectionOperation
@@ -152,19 +152,12 @@ class CorrectionHistory:
             if not isinstance(manual_edits, list):
                 raise ValueError("manual_pose_edits must be a list")
             manual_edits.extend(operation_ids)
-            stages = manifest.setdefault("stages", {})
-            if not isinstance(stages, dict):
-                raise ValueError("project stages must be an object")
-            for stage in StageGraph().invalidate_from(
-                "personAssociation", "confirmed 2D correction", operation_ids[0]
-            ):
-                record = stages.setdefault(stage, {})
-                if not isinstance(record, dict):
-                    raise ValueError(f"project stage must be an object: {stage}")
-                record["status"] = "stale"
-                record["generation"] = int(record.get("generation", 0)) + 1
-                record["invalidated_reason"] = "confirmed 2D correction"
-                record["invalidated_by"] = operation_ids
+            invalidate_manifest(
+                manifest,
+                "personAssociation",
+                "confirmed 2D correction",
+                operation_ids,
+            )
             manifest["updated_at"] = utc_now()
             transaction.prepare_json("manifest.json", manifest)
 

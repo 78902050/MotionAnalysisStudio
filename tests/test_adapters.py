@@ -141,6 +141,22 @@ class AdapterTests(unittest.TestCase):
                         check=False,
                     )
 
+    def test_pose2sim_runner_reports_stage_when_process_cannot_start(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runner = PipelineRunner(
+                commands={"synchronization": [str(Path(directory) / "missing.exe")]},
+                allowed_stages=("synchronization",),
+                log_dir=Path(directory) / "logs",
+            )
+
+            result = runner.run(
+                TaskRequest("project-a", 2, "sync", {}), ("synchronization",)
+            )
+
+            self.assertFalse(result.succeeded)
+            self.assertEqual(result.failed_stage, "synchronization")
+            self.assertIn("FileNotFoundError", result.error or "")
+
 
 if __name__ == "__main__":
     unittest.main()

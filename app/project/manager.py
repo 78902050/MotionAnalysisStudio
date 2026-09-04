@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from app.io.atomic import AtomicJsonStore
+from app.pipeline.dependency_graph import invalidate_manifest
 
 from .manifest import PROJECT_DIRECTORIES, new_project_manifest
+from .manifest import utc_now
 from .migration import migrate_v2_manifest
 
 
@@ -97,6 +99,17 @@ class ProjectManager:
 
     def save_manifest(self) -> None:
         AtomicJsonStore.replace(self.root / "manifest.json", self.manifest)
+
+    def invalidate_from(
+        self,
+        stage: str,
+        reason: str,
+        operation_ids: tuple[str, ...] | list[str] = (),
+    ) -> list[str]:
+        affected = invalidate_manifest(self.manifest, stage, reason, operation_ids)
+        self.manifest["updated_at"] = utc_now()
+        self.save_manifest()
+        return affected
 
     def _ensure_layout(self) -> None:
         for relative in PROJECT_DIRECTORIES:

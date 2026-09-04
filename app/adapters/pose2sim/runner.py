@@ -22,6 +22,7 @@ class RunResult:
     cancelled: bool
     log_path: Path
     error: str | None = None
+    failed_stage: str | None = None
 
 
 @dataclass
@@ -108,6 +109,7 @@ class PipelineRunner:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.log_dir / f"{task_id}.log"
         error: str | None = None
+        failed_stage: str | None = None
         cancelled = False
         succeeded = True
 
@@ -120,6 +122,7 @@ class PipelineRunner:
                         cancelled = True
                         succeeded = False
                         break
+                    failed_stage = stage
                     command = self.commands[stage]
                     log.write(f"[{stage}] command={subprocess.list2cmdline(command)}\n")
                     log.flush()
@@ -139,6 +142,7 @@ class PipelineRunner:
                                 terminate_process(process)
                                 cancelled = True
                                 succeeded = False
+                                failed_stage = stage
                                 break
                         return_code = process.wait()
                     finally:
@@ -150,6 +154,7 @@ class PipelineRunner:
                         succeeded = False
                         error = f"stage {stage} exited with code {return_code}"
                         break
+                    failed_stage = None
                 log.flush()
         except Exception as exc:
             succeeded = False
@@ -164,6 +169,7 @@ class PipelineRunner:
                 cancelled,
                 log_path,
                 error,
+                failed_stage,
             )
             state.done.set()
 

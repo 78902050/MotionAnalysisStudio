@@ -1,7 +1,9 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.project.manager import ProjectManager
 from app.quality.audit import QualityAuditService
@@ -162,6 +164,32 @@ class QualityAuditTests(unittest.TestCase):
             self.assertTrue(any(issue.severity == "blocking" for issue in report.issues()))
             self.assertTrue(any(issue.kind == "input_invalid" for issue in report.issues()))
             self.assertIn("pose-3d", " ".join(issue.message for issue in report.issues()))
+
+    def test_report_save_rolls_back_current_when_history_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = self._project_with_quality_inputs(Path(directory))
+            store = QualityReportStore(project)
+            before = QualityReport.create("quality-before", {"missing_rate": 0.2}, (), {})
+            store.save(before)
+            current = project.path_for("quality_report")
+            before_bytes = current.read_bytes()
+            after = QualityReport.create("quality-after", {"missing_rate": 0.1}, (), {})
+            real_replace = os.replace
+            replacements = 0
+
+            def fail_second_replace(source, target):
+                nonlocal replacements
+                replacements += 1
+                if replacements == 2:
+                    raise OSError("history write failed")
+                return real_replace(source, target)
+
+            with patch("app.io.transactions.os.replace", side_effect=fail_second_replace):
+                with self.assertRaisesRegex(OSError, "history write failed"):
+                    store.save(after)
+
+            self.assertEqual(current.read_bytes(), before_bytes)
+            self.assertFalse((current.parent / "history" / "quality-after.json").exists())
 
 
 if __name__ == "__main__":
