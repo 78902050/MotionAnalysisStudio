@@ -37,7 +37,8 @@ class AtomicStorageTests(unittest.TestCase):
             path = Path(directory) / "history.jsonl"
             store = JsonlStore(path)
             store.append({"id": "one"})
-            path.open("a", encoding="utf-8").write('{"id": "broken"')
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write('{"id": "broken"')
 
             records, errors = store.read()
 
@@ -62,3 +63,4 @@ class AtomicStorageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
