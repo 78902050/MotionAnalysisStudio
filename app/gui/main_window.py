@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from app.project.manager import ProjectManager
 
 from .layout import make_resizable_splitter, make_scrollable_panel
+from .pages.association_page import AssociationPage
 from .pages.calibration_page import CalibrationPage
 from .pages.correction_page import CorrectionPage
 from .pages.synchronization_page import SynchronizationPage
@@ -78,6 +79,8 @@ class MainWindow(QMainWindow):
                 if page_id == "synchronization"
                 else CorrectionPage()
                 if page_id == "correction_2d"
+                else AssociationPage()
+                if page_id == "association"
                 else self._build_page(page_id, label)
             )
             self._pages[page_id] = page
@@ -172,6 +175,7 @@ class MainWindow(QMainWindow):
             "quality_3d": "查看重投影误差、有效点率、缺失率和覆盖区间。",
             "calibration": "查看当前标定输入和相机质量诊断。",
             "synchronization": "查看同步帧与原视频帧的映射关系。",
+            "association": "诊断人物轨迹、查看候选并人工确认语义关联。",
         }
         return descriptions.get(page_id, "管理当前项目的阶段数据和操作。")
 
@@ -223,6 +227,9 @@ class MainWindow(QMainWindow):
                 if isinstance(camera_id, str) and camera_id.strip():
                     cameras.append(camera_id)
             correction_page.set_cameras(cameras)
+        association_page = self._pages.get("association")
+        if isinstance(association_page, AssociationPage):
+            association_page.set_project(project)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
 
     @property
@@ -266,4 +273,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.settings.setValue("workspace_splitter_sizes", self.workspace_splitter.sizes())
+        association_page = self._pages.get("association")
+        if isinstance(association_page, AssociationPage):
+            association_page.close()
         event.accept()

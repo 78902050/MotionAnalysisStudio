@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from app.project.manager import ProjectManager
@@ -25,21 +26,23 @@ class SynchronizationAnalyzer:
         self._offset_ranges.clear()
         self._issues = ()
         path = project.root / "synchronization" / "mapping.json"
-        if not path.is_file():
-            self._issues = (SynchronizationIssue("blocking", f"同步映射文件不存在：{path}"),)
-            return SynchronizationReport((), self._issues)
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            self._issues = (SynchronizationIssue("blocking", f"同步映射文件不可读：{exc}"),)
-            return SynchronizationReport((), self._issues)
-        if not isinstance(value, dict):
-            self._issues = (SynchronizationIssue("blocking", "同步映射根节点必须是对象"),)
-            return SynchronizationReport((), self._issues)
-
         issues: list[SynchronizationIssue] = []
-        self._read_frame_mappings(value.get("mappings"), path, issues)
-        self._read_offsets(value.get("offsets"), path, issues)
+        if path.is_file():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self._issues = (SynchronizationIssue("blocking", f"同步映射文件不可读：{exc}"),)
+                return SynchronizationReport((), self._issues)
+            if not isinstance(value, dict):
+                self._issues = (SynchronizationIssue("blocking", "同步映射根节点必须是对象"),)
+                return SynchronizationReport((), self._issues)
+            self._read_frame_mappings(value.get("mappings"), path, issues)
+            self._read_offsets(value.get("offsets"), path, issues)
+        else:
+            inferred = self._read_filename_offsets(project, issues)
+            if not inferred:
+                issues.append(SynchronizationIssue("blocking", f"同步映射文件不存在：{path}"))
+
         try:
             overrides = SynchronizationOverrideStore(project.root).load()
         except (OSError, ValueError) as exc:
@@ -142,3 +145,47 @@ class SynchronizationAnalyzer:
                 self._offset_ranges.setdefault(camera, []).append((start, end, delta, source))
             except (KeyError, TypeError, ValueError) as exc:
                 issues.append(SynchronizationIssue("warning", f"忽略无效同步 offset：{exc}"))
+
+    def _read_filename_offsets(self, project: ProjectManager, issues: list[SynchronizationIssue]) -> bool:
+        raw_root = project.root / "pose"
+        sync_root = project.root / "pose-sync"
+        cameras: set[str] = set()
+        for item in project.manifest.get("cameras", []):
+            if isinstance(item, dict) and isinstance(item.get("camera_id"), str):
+                cameras.add(item["camera_id"])
+        for root in (raw_root, sync_root):
+            if root.is_dir():
+                cameras.update(
+                    item.name.removesuffix("_json")
+                    for item in root.iterdir()
+                    if item.is_dir() and item.name.endswith("_json")
+                )
+        inferred = False
+        for camera in sorted(cameras):
+            raw_dir = raw_root / f"{camera}_json"
+            sync_dir = sync_root / f"{camera}_json"
+            raw_frames = self._filename_frames(raw_dir)
+            sync_frames = self._filename_frames(sync_dir)
+            if not raw_frames or not sync_frames:
+                continue
+            delta = min(raw_frames) - min(sync_frames)
+            shifted = {frame + delta for frame in sync_frames}
+            if not shifted.issubset(raw_frames):
+                continue
+            source = f"{raw_dir} and {sync_dir} filename ranges"
+            self._offset_ranges[camera] = [(min(sync_frames), max(sync_frames), delta, source)]
+            inferred = True
+        if inferred:
+            issues.append(SynchronizationIssue("warning", "同步映射由 pose 与 pose-sync 文件名范围推导"))
+        return inferred
+
+    @staticmethod
+    def _filename_frames(directory: Path) -> set[int]:
+        if not directory.is_dir():
+            return set()
+        result: set[int] = set()
+        for item in directory.glob("*.json"):
+            match = re.search(r"_(\d+)\.json$", item.name)
+            if match:
+                result.add(int(match.group(1)))
+        return result
