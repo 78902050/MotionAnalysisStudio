@@ -44,6 +44,12 @@ class GuiShellTests(unittest.TestCase):
     def test_open_project_updates_context_without_exposing_absolute_path_in_title(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = ProjectManager.create(Path(directory) / "中文项目", "试验一")
+            project.manifest["cameras"] = [
+                {"camera_id": "camA"},
+                {"camera_id": "camB"},
+                {"camera_id": "camC"},
+                {"camera_id": "camD"},
+            ]
             window = MainWindow()
 
             window.open_project(project)
@@ -51,6 +57,11 @@ class GuiShellTests(unittest.TestCase):
             self.assertIs(window.project, project)
             self.assertIn("试验一", window.project_label.text())
             self.assertNotIn(str(project.root), window.windowTitle())
+            correction_page = window._pages["correction_2d"]
+            self.assertEqual(
+                [correction_page.camera_selector.itemText(index) for index in range(4)],
+                ["camA", "camB", "camC", "camD"],
+            )
 
     def test_close_request_is_allowed_when_no_unsaved_changes_exist(self) -> None:
         window = MainWindow()

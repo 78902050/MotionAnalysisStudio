@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -25,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.domain.addresses import CorrectionTarget, FrameAddress
+from app.domain.addresses import CorrectionTarget
 
 from ..layout import make_resizable_splitter, make_scrollable_panel
 
@@ -122,7 +121,7 @@ class CorrectionPage(QWidget):
         controls.addWidget(self.view_count)
         controls.addWidget(QLabel("显示相机"))
         self.camera_selector = QComboBox()
-        self.camera_selector.addItems(["cam01", "cam02", "cam03", "cam04"])
+        self.camera_selector.addItem("请先打开项目")
         self.camera_selector.setObjectName("correction_camera_selector")
         controls.addWidget(self.camera_selector)
         controls.addStretch(1)
@@ -138,10 +137,11 @@ class CorrectionPage(QWidget):
         for index in range(4):
             card = QFrame()
             card.setObjectName(f"correction_view_{index + 1}")
+            card.setProperty("camera", "")
             card.setMinimumWidth(120)
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             card_layout = QVBoxLayout(card)
-            label = QLabel(f"cam0{index + 1}\n等待原视频帧")
+            label = QLabel(f"视图 {index + 1}\n等待原视频帧")
             label.setObjectName(f"correction_view_label_{index + 1}")
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setWordWrap(True)
@@ -244,14 +244,25 @@ class CorrectionPage(QWidget):
         for index, card in enumerate(self._view_cards):
             card.setVisible(index < count)
 
+    def set_cameras(self, cameras: list[str] | tuple[str, ...]) -> None:
+        names = [camera for camera in cameras if isinstance(camera, str) and camera.strip()]
+        self.camera_selector.blockSignals(True)
+        self.camera_selector.clear()
+        self.camera_selector.addItems(names or ["请先打开项目"])
+        self.camera_selector.blockSignals(False)
+        for index, card in enumerate(self._view_cards):
+            camera = names[index] if index < len(names) else ""
+            card.setProperty("camera", camera)
+            label = card.findChild(QLabel)
+            if label is not None:
+                label.setText(f"{camera or f'视图 {index + 1}'}\n等待原视频帧")
+
     def set_target(self, target: CorrectionTarget) -> None:
         self.current_camera.setText(target.address.camera)
         self.synchronized_frame.setText(str(target.address.frame))
         self.raw_frame.setText("等待映射")
         self.person_value.setText(target.person.project_person_id)
         self.keypoint_value.setText(target.keypoint.keypoint_name)
-        if self.provider is not None and target.address.timeline == "raw":
-            self.provider.request(target.address)
 
     def save(self) -> None:
         if self.session is None:
@@ -279,11 +290,11 @@ class CorrectionPage(QWidget):
     def _on_frame_ready(self, camera: str, frame: int, _image: object) -> None:
         for card in self._view_cards:
             label = card.findChild(QLabel)
-            if label is not None and label.text().startswith(camera):
+            if label is not None and card.property("camera") == camera:
                 label.setText(f"{camera}\n原视频帧 {frame}\n已加载")
 
     def _on_frame_failed(self, camera: str, frame: int, reason: str) -> None:
         for card in self._view_cards:
             label = card.findChild(QLabel)
-            if label is not None and label.text().startswith(camera):
+            if label is not None and card.property("camera") == camera:
                 label.setText(f"{camera}\n原视频帧 {frame}\n{reason}")

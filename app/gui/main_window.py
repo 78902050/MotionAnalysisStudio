@@ -22,6 +22,7 @@ from app.project.manager import ProjectManager
 from .layout import make_resizable_splitter, make_scrollable_panel
 from .pages.calibration_page import CalibrationPage
 from .pages.correction_page import CorrectionPage
+from .pages.synchronization_page import SynchronizationPage
 from .style import apply_style
 from .task_center import TaskStatusStrip
 
@@ -73,6 +74,8 @@ class MainWindow(QMainWindow):
             page = (
                 CalibrationPage()
                 if page_id == "calibration"
+                else SynchronizationPage()
+                if page_id == "synchronization"
                 else CorrectionPage()
                 if page_id == "correction_2d"
                 else self._build_page(page_id, label)
@@ -207,6 +210,19 @@ class MainWindow(QMainWindow):
         calibration_page = self._pages.get("calibration")
         if isinstance(calibration_page, CalibrationPage):
             calibration_page.set_project(project)
+        synchronization_page = self._pages.get("synchronization")
+        if isinstance(synchronization_page, SynchronizationPage):
+            synchronization_page.set_project(project)
+        correction_page = self._pages.get("correction_2d")
+        if isinstance(correction_page, CorrectionPage):
+            cameras = []
+            for record in project.manifest.get("cameras", []):
+                if not isinstance(record, dict):
+                    continue
+                camera_id = record.get("camera_id")
+                if isinstance(camera_id, str) and camera_id.strip():
+                    cameras.append(camera_id)
+            correction_page.set_cameras(cameras)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
 
     @property
