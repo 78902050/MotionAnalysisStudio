@@ -1,9 +1,12 @@
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
+from app.project import manager as project_manager_module
 from app.project.manager import ProjectManager
+from app.project.migration import migrate_v2_manifest
 
 
 class ProjectManagerTests(unittest.TestCase):
@@ -85,6 +88,52 @@ class ProjectManagerTests(unittest.TestCase):
             self.assertEqual(opened.manifest, project.manifest)
             with self.assertRaises(KeyError):
                 opened.path_for("not-a-manifest-path")
+
+    def test_manifest_path_cannot_escape_project_root(self) -> None:
+        self.assertTrue(
+            hasattr(project_manager_module, "ProjectPathError"),
+            "ProjectPathError must distinguish unsafe manifest paths",
+        )
+        project_path_error = project_manager_module.ProjectPathError
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "项目"
+            project = ProjectManager.create(root, "路径边界")
+            project.manifest["paths"]["quality_report"] = "../outside.json"
+
+            with self.assertRaises(project_path_error):
+                project.path_for("quality_report")
+
+            project.manifest["paths"]["quality_report"] = str(Path(directory) / "absolute.json")
+            with self.assertRaises(project_path_error):
+                project.path_for("quality_report")
+
+    def test_open_v3_repairs_missing_project_layout_without_changing_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "项目"
+            project = ProjectManager.create(root, "布局修复")
+            manifest_before = json.dumps(project.manifest, ensure_ascii=False, sort_keys=True)
+            (root / "corrections" / "history.jsonl").unlink()
+            (root / "corrections" / "sessions").rmdir()
+
+            opened = ProjectManager.open(root)
+
+            self.assertFalse(opened.migrated)
+            self.assertTrue((root / "corrections" / "sessions").is_dir())
+            self.assertTrue((root / "corrections" / "history.jsonl").is_file())
+            self.assertEqual(
+                json.dumps(opened.manifest, ensure_ascii=False, sort_keys=True), manifest_before
+            )
+
+    def test_v2_migration_retry_uses_stable_project_id(self) -> None:
+        legacy = {"schema_version": 2, "name": "重试项目"}
+
+        try:
+            first = migrate_v2_manifest(deepcopy(legacy), project_identity="D:/projects/retry")
+            second = migrate_v2_manifest(deepcopy(legacy), project_identity="D:/projects/retry")
+        except TypeError as exc:
+            self.fail(f"migration does not support a stable project identity: {exc}")
+
+        self.assertEqual(first["project_id"], second["project_id"])
 
 
 if __name__ == "__main__":

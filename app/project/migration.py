@@ -1,11 +1,15 @@
 """Idempotent migration from the legacy project manifest format."""
 
+import json
 from copy import deepcopy
+from uuid import NAMESPACE_URL, uuid5
 
 from .manifest import DEFAULT_PATHS, STAGE_NAMES, utc_now
 
 
-def migrate_v2_manifest(manifest: dict[str, object]) -> dict[str, object]:
+def migrate_v2_manifest(
+    manifest: dict[str, object], *, project_identity: str | None = None
+) -> dict[str, object]:
     """Return a v3 manifest while preserving all legacy user-owned values."""
 
     migrated = deepcopy(manifest)
@@ -14,7 +18,11 @@ def migrate_v2_manifest(manifest: dict[str, object]) -> dict[str, object]:
         raise ValueError(f"cannot migrate schema version {original_version}")
 
     migrated["schema_version"] = 3
-    migrated.setdefault("project_id", f"project-migrated-{id(manifest):x}")
+    if "project_id" not in migrated:
+        identity = project_identity or json.dumps(
+            manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        migrated["project_id"] = f"project-migrated-{uuid5(NAMESPACE_URL, identity).hex[:12]}"
     migrated.setdefault("created_at", utc_now())
     migrated["updated_at"] = utc_now()
     migrated.setdefault("frame_base", 0)
