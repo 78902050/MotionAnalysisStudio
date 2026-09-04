@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import zipfile
+from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path
@@ -34,6 +35,40 @@ _PACKAGE_NAMES = {
 }
 _MAX_LOG_BYTES = 2 * 1024 * 1024
 _WINDOWS_PATH = re.compile(r"(?i)[a-z]:[\\/][^\r\n\"']+")
+
+
+@dataclass(frozen=True)
+class GuiSmokeResult:
+    """Outcome of loading the complete desktop GUI stack."""
+
+    ok: bool
+    message: str
+    checks: tuple[str, ...]
+
+
+def run_gui_smoke() -> GuiSmokeResult:
+    """Load Qt and construct the real main window without entering its event loop."""
+
+    checks: list[str] = []
+    try:
+        from PySide6.QtWidgets import QApplication
+
+        checks.append("QtWidgets import")
+        application = QApplication.instance()
+        if application is None:
+            application = QApplication(["MotionAnalysisStudio", "-platform", "offscreen"])
+        checks.append("QApplication")
+
+        from app.gui.main_window import MainWindow
+
+        window = MainWindow()
+        application.processEvents()
+        window.close()
+        application.processEvents()
+        checks.append("MainWindow")
+    except Exception as exc:
+        return GuiSmokeResult(False, f"GUI smoke check failed: {type(exc).__name__}: {exc}", tuple(checks))
+    return GuiSmokeResult(True, "GUI smoke check passed", tuple(checks))
 
 
 def validate_installation(include_external: bool = True) -> list[str]:

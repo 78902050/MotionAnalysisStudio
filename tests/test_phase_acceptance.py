@@ -42,12 +42,15 @@ class PhaseAcceptanceTests(unittest.TestCase):
     def test_packaging_and_smoke_scripts_use_project_relative_paths(self) -> None:
         build_script = Path("scripts/build_windows.ps1").read_text(encoding="utf-8")
         smoke_script = Path("scripts/smoke_exe.ps1").read_text(encoding="utf-8")
+        spec = Path("MotionAnalysisStudio.spec").read_text(encoding="utf-8")
 
         self.assertIn("PyInstaller", build_script)
-        self.assertIn("app\\main.py", build_script)
-        self.assertIn("--smoke-test", smoke_script)
+        self.assertIn("MotionAnalysisStudio.spec", build_script)
+        self.assertIn("SPECPATH", spec)
+        self.assertIn('"app" / "main.py"', spec)
+        self.assertIn("--gui-smoke-test", smoke_script)
         self.assertIn("MotionAnalysisStudio.exe", smoke_script)
-        self.assertNotIn("D:\\CODEX\\2026-09-01\\ni", build_script + smoke_script)
+        self.assertNotIn("D:\\CODEX\\2026-09-01\\ni", build_script + smoke_script + spec)
 
 
 if __name__ == "__main__":

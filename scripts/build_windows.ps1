@@ -18,24 +18,33 @@ $distPath = Join-Path $OutputRoot "dist"
 $workPath = Join-Path $OutputRoot "work"
 New-Item -ItemType Directory -Force -Path $distPath, $workPath | Out-Null
 
+$pythonPath = (Get-Command $Python).Source
+$pythonDirectory = Split-Path -Parent $pythonPath
+$venvRoot = Split-Path -Parent $pythonDirectory
+$systemDirectory = Join-Path $env:SystemRoot "System32"
+$originalPath = $env:PATH
+$env:PATH = @($pythonDirectory, $venvRoot, $systemDirectory, $env:SystemRoot) -join ";"
+
 $arguments = @(
     "-m", "PyInstaller",
     "--noconfirm",
     "--clean",
-    "--onefile",
-    "--windowed",
-    "--name", "MotionAnalysisStudio",
-    "--paths", $root,
     "--distpath", $distPath,
     "--workpath", $workPath,
-    "--specpath", $workPath,
-    (Join-Path $root "app\main.py")
+    (Join-Path $root "MotionAnalysisStudio.spec")
 )
-& $Python @arguments
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+try {
+    & $pythonPath @arguments
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
+finally {
+    $env:PATH = $originalPath
 }
 
+$auditScript = Join-Path $root "scripts\audit_dist_dlls.ps1"
+& $auditScript -Dist $distPath -WorkRoot $workPath
 $executable = Join-Path $distPath "MotionAnalysisStudio.exe"
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
     throw "PyInstaller completed without creating $executable"

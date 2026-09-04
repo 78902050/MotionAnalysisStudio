@@ -5,13 +5,22 @@ from __future__ import annotations
 import argparse
 import sys
 
-from app.diagnostics.bundle import validate_installation
+from app.diagnostics.bundle import run_gui_smoke, validate_installation
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Motion Analysis Studio")
     parser.add_argument("--smoke-test", action="store_true", help="validate runtime capabilities without opening the UI")
+    parser.add_argument(
+        "--gui-smoke-test",
+        action="store_true",
+        help="load Qt and construct the main window without entering the UI event loop",
+    )
     arguments = parser.parse_args(argv)
+    if arguments.gui_smoke_test:
+        result = run_gui_smoke()
+        print(result.message, file=sys.stdout if result.ok else sys.stderr)
+        return 0 if result.ok else 1
     if arguments.smoke_test:
         issues = validate_installation(include_external=False)
         if issues:
