@@ -32,6 +32,7 @@ class TasksPage(QWidget):
         layout.addWidget(description)
         self.task_list = QListWidget()
         self.task_list.setObjectName("task_list")
+        self.task_list.currentItemChanged.connect(self._show_selected_details)
         layout.addWidget(self.task_list, 1)
         actions = QHBoxLayout()
         self.refresh_button = QPushButton("刷新")
@@ -44,6 +45,7 @@ class TasksPage(QWidget):
         actions.addStretch(1)
         layout.addLayout(actions)
         self.status = QLabel("无后台任务")
+        self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.timer = QTimer(self)
         self.timer.setInterval(500)
@@ -67,6 +69,23 @@ class TasksPage(QWidget):
             if snapshot.task_id == selected_id:
                 self.task_list.setCurrentItem(item)
         self.status.setText(f"共 {len(snapshots)} 个任务" if snapshots else "无后台任务")
+
+    def _show_selected_details(
+        self,
+        current: QListWidgetItem | None,
+        _previous: QListWidgetItem | None = None,
+    ) -> None:
+        if current is None:
+            return
+        task_id = str(current.data(Qt.ItemDataRole.UserRole))
+        try:
+            snapshot = self.supervisor.snapshot(task_id)
+        except KeyError:
+            return
+        self.status.setText(
+            f"任务 {snapshot.task_id} · 项目 {snapshot.project_id} · 代次 {snapshot.generation}"
+            + (f"\n{snapshot.error}" if snapshot.error else "")
+        )
 
     def cancel_selected(self) -> None:
         item = self.task_list.currentItem()

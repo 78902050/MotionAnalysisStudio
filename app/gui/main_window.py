@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from app.application.controller import ApplicationController
 from app.application.correction_rerun_launcher import CorrectionRerunLauncher
+from app.application.pipeline_launcher import PipelineLauncher
 from app.application.quality_correction_service import QualityCorrectionService
 from app.domain.addresses import CorrectionTarget, FrameAddress
 from app.media.frame_provider import MultiViewFrameProvider
@@ -40,6 +41,7 @@ from .pages.comparison_page import ComparisonPage
 from .pages.correction_page import CorrectionPage
 from .pages.events_page import EventsPage
 from .pages.media_page import MediaPage
+from .pages.pipeline_page import PipelinePage
 from .pages.project_page import ProjectPage
 from .pages.quality_2d_page import Quality2DPage
 from .pages.quality_3d_page import Quality3DPage
@@ -61,6 +63,7 @@ PAGE_LABELS: tuple[tuple[str, str], ...] = (
     ("analysis", "运动学"),
     ("events", "事件周期"),
     ("comparison", "对比报告"),
+    ("pipeline", "Pose2Sim 流程"),
     ("tasks", "任务与日志"),
     ("settings", "设置"),
 )
@@ -97,6 +100,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("MotionAnalysisStudio", "MotionAnalysisStudio")
         self.controller = controller or ApplicationController()
         self._correction_rerun_launcher = CorrectionRerunLauncher(self.controller)
+        self.pipeline_launcher = PipelineLauncher(self.controller)
         if not self.controller.has_correction_rerun_handler():
             self.controller.set_correction_rerun_handler(self._correction_rerun_launcher)
         self.project: ProjectManager | None = self.controller.current_project
@@ -139,6 +143,8 @@ class MainWindow(QMainWindow):
                 if page_id == "media"
                 else SettingsPage(settings=self.settings)
                 if page_id == "settings"
+                else PipelinePage(launcher=self.pipeline_launcher, settings=self.settings)
+                if page_id == "pipeline"
                 else TasksPage(self.controller.supervisor)
                 if page_id == "tasks"
                 else CalibrationPage(controller=self.controller, settings=self.settings)
@@ -175,6 +181,10 @@ class MainWindow(QMainWindow):
         assert isinstance(correction_page, CorrectionPage)
         self.controller.register_editor("correction_2d", correction_page)
         correction_page.frame_requested.connect(self._open_correction_frame)
+        pipeline_page = self._pages["pipeline"]
+        assert isinstance(pipeline_page, PipelinePage)
+        self.controller.register_editor("pose2sim_config", pipeline_page)
+        pipeline_page.pipeline_finished.connect(self._pipeline_finished)
         for page_id in ("quality_2d", "quality_3d"):
             quality_page = self._pages[page_id]
             assert isinstance(quality_page, (Quality2DPage, Quality3DPage))
@@ -239,6 +249,7 @@ class MainWindow(QMainWindow):
             QStyle.StandardPixmap.SP_MediaPlay,
             QStyle.StandardPixmap.SP_MediaSeekForward,
             QStyle.StandardPixmap.SP_FileDialogContentsView,
+            QStyle.StandardPixmap.SP_MediaPlay,
             QStyle.StandardPixmap.SP_MessageBoxInformation,
             QStyle.StandardPixmap.SP_FileDialogInfoView,
         )
@@ -291,6 +302,7 @@ class MainWindow(QMainWindow):
             "analysis": "计算位置、速度、加速度和角度等可追溯运动学指标。",
             "events": "按规则检测动作事件、构建周期并保留人工调整历史。",
             "comparison": "明确选择项目、人物和试次，按帧、时间或事件生成可复现对比报告。",
+            "pipeline": "编辑 Config.toml，逐阶段运行 Pose2Sim 并查看实时日志。",
         }
         return descriptions.get(page_id, "管理当前项目的阶段数据和操作。")
 
@@ -392,12 +404,36 @@ class MainWindow(QMainWindow):
         comparison_page = self._pages.get("comparison")
         if isinstance(comparison_page, ComparisonPage):
             comparison_page.set_project(project)
+        pipeline_page = self._pages.get("pipeline")
+        if isinstance(pipeline_page, PipelinePage):
+            pipeline_page.set_project(project)
         project_page = self._pages.get("project")
         if isinstance(project_page, ProjectPage):
             project_page.set_project(project)
         self._start_initial_quality_scan_if_needed(project)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
         return True
+
+    @Slot(object)
+    def _pipeline_finished(self, result: object) -> None:
+        project = self.project
+        if project is None:
+            return
+        if (
+            getattr(result, "project_id", None) != str(project.manifest["project_id"])
+            or getattr(result, "generation", None) != self.controller.generation
+        ):
+            return
+        for page_id in ("synchronization", "analysis", "events", "comparison"):
+            page = self._pages.get(page_id)
+            setter = getattr(page, "set_project", None)
+            if callable(setter):
+                setter(project)
+        self.stage_label.setText(
+            "阶段：流程已完成"
+            if getattr(result, "status", None) == "succeeded"
+            else "阶段：流程未完成"
+        )
 
     def _start_initial_quality_scan_if_needed(self, project: ProjectManager) -> None:
         self.initial_quality_handle = None
@@ -699,6 +735,9 @@ class MainWindow(QMainWindow):
         comparison_page = self._pages.get("comparison")
         if isinstance(comparison_page, ComparisonPage):
             comparison_page.close()
+        pipeline_page = self._pages.get("pipeline")
+        if isinstance(pipeline_page, PipelinePage):
+            pipeline_page.close()
         if self._discovery_thread is not None and self._discovery_thread.isRunning():
             self._discovery_thread.quit()
             self._discovery_thread.wait(5000)

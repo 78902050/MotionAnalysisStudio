@@ -2,14 +2,26 @@
 
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Lock, Thread
+from time import monotonic
 from typing import Callable
 from uuid import uuid4
 
 from app.tasks.base import TaskRequest
 
 from .stage_process import terminate_process
+
+
+@dataclass(frozen=True)
+class StageRunResult:
+    stage: str
+    status: str
+    started_at: str
+    finished_at: str
+    duration_seconds: float
+    exit_code: int | None
 
 
 @dataclass(frozen=True)
@@ -23,6 +35,7 @@ class RunResult:
     log_path: Path
     error: str | None = None
     failed_stage: str | None = None
+    stage_results: tuple[StageRunResult, ...] = ()
 
 
 @dataclass
@@ -41,6 +54,7 @@ class PipelineRunHandle:
     task_id: str
     project_id: str
     generation: int
+    log_path: Path
     _cancel: Callable[[], None]
     _wait: Callable[[float | None], RunResult]
 
@@ -49,6 +63,18 @@ class PipelineRunHandle:
 
     def wait(self, timeout: float | None = None) -> RunResult:
         return self._wait(timeout)
+
+    def read_log(self, offset: int = 0) -> tuple[str, int]:
+        if offset < 0:
+            raise ValueError("log offset must not be negative")
+        try:
+            with self.log_path.open("rb") as handle:
+                handle.seek(offset)
+                data = handle.read()
+                next_offset = handle.tell()
+        except FileNotFoundError:
+            return "", offset
+        return data.decode("utf-8", errors="replace"), next_offset
 
 
 class PipelineRunner:
@@ -74,6 +100,11 @@ class PipelineRunner:
         self._validate_stages(stages)
         task_id = f"task-{uuid4().hex}"
         state = _RunState(request, stages, Event(), Event())
+        log_name = request.payload.get("log_file")
+        if isinstance(log_name, str) and Path(log_name).name == log_name:
+            log_path = self.log_dir / log_name
+        else:
+            log_path = self.log_dir / f"{task_id}.log"
         thread = Thread(
             target=self._execute,
             args=(task_id, state),
@@ -88,6 +119,7 @@ class PipelineRunner:
             task_id,
             request.project_id,
             request.generation,
+            log_path,
             lambda: self.cancel(task_id),
             lambda timeout=None: self._wait(task_id, timeout),
         )
@@ -107,11 +139,17 @@ class PipelineRunner:
         stages = state.stages
         cancel_event = state.cancel_event
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = self.log_dir / f"{task_id}.log"
+        log_name = request.payload.get("log_file")
+        log_path = (
+            self.log_dir / log_name
+            if isinstance(log_name, str) and Path(log_name).name == log_name
+            else self.log_dir / f"{task_id}.log"
+        )
         error: str | None = None
         failed_stage: str | None = None
         cancelled = False
         succeeded = True
+        stage_results: list[StageRunResult] = []
 
         try:
             with log_path.open("w", encoding="utf-8", newline="\n") as log:
@@ -124,16 +162,32 @@ class PipelineRunner:
                         break
                     failed_stage = stage
                     command = self.commands[stage]
+                    started_at = datetime.now(timezone.utc).isoformat()
+                    started = monotonic()
                     log.write(f"[{stage}] command={subprocess.list2cmdline(command)}\n")
+                    log.write(f"[{stage}] started_at={started_at}\n")
                     log.flush()
-                    process = subprocess.Popen(
-                        command,
-                        stdout=log,
-                        stderr=log,
-                        cwd=request.payload.get("working_directory")
-                        if isinstance(request.payload.get("working_directory"), str)
-                        else None,
-                    )
+                    try:
+                        process = subprocess.Popen(
+                            command,
+                            stdout=log,
+                            stderr=log,
+                            cwd=request.payload.get("working_directory")
+                            if isinstance(request.payload.get("working_directory"), str)
+                            else None,
+                        )
+                    except Exception:
+                        stage_results.append(
+                            StageRunResult(
+                                stage,
+                                "failed",
+                                started_at,
+                                datetime.now(timezone.utc).isoformat(),
+                                monotonic() - started,
+                                None,
+                            )
+                        )
+                        raise
                     with self._lock:
                         state.process = process
                     try:
@@ -149,11 +203,45 @@ class PipelineRunner:
                         with self._lock:
                             state.process = None
                     if cancelled:
+                        stage_results.append(
+                            StageRunResult(
+                                stage,
+                                "cancelled",
+                                started_at,
+                                datetime.now(timezone.utc).isoformat(),
+                                monotonic() - started,
+                                return_code,
+                            )
+                        )
                         break
                     if return_code != 0:
                         succeeded = False
                         error = f"stage {stage} exited with code {return_code}"
+                        stage_results.append(
+                            StageRunResult(
+                                stage,
+                                "failed",
+                                started_at,
+                                datetime.now(timezone.utc).isoformat(),
+                                monotonic() - started,
+                                return_code,
+                            )
+                        )
                         break
+                    stage_results.append(
+                        StageRunResult(
+                            stage,
+                            "completed",
+                            started_at,
+                            datetime.now(timezone.utc).isoformat(),
+                            monotonic() - started,
+                            return_code,
+                        )
+                    )
+                    log.write(
+                        f"[{stage}] completed duration_seconds={stage_results[-1].duration_seconds:.3f}\n"
+                    )
+                    log.flush()
                     failed_stage = None
                 log.flush()
         except Exception as exc:
@@ -170,6 +258,7 @@ class PipelineRunner:
                 log_path,
                 error,
                 failed_stage,
+                tuple(stage_results),
             )
             state.done.set()
 

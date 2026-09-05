@@ -19,6 +19,7 @@ STAGES: tuple[str, ...] = (
 )
 
 POSE2SIM_EXECUTION_STAGES: tuple[str, ...] = STAGES[1:8]
+GENERAL_POSE2SIM_STAGES: tuple[str, ...] = STAGES[:8]
 
 _DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "calibration": (),
