@@ -10,6 +10,86 @@ from app.synchronization.overrides import SynchronizationOverride, Synchronizati
 
 
 class SynchronizationTests(unittest.TestCase):
+    def test_mapping_path_override_is_loaded_as_verified_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = ProjectManager.create(root, "映射文件")
+            mapping_path = root / "imported-mapping.json"
+            mapping_path.write_text(
+                json.dumps({"offsets": [{"camera": "cam01", "frame_delta": 7, "source": "external"}]}),
+                encoding="utf-8",
+            )
+            SynchronizationOverrideStore(root).save(
+                SynchronizationOverride("cam01", "manual-file", None, mapping_path)
+            )
+
+            analyzer = SynchronizationAnalyzer()
+            report = analyzer.analyze(project)
+
+            self.assertEqual(analyzer.mapping("cam01", 10).source_frame, 17)
+            self.assertEqual(report.trust_by_camera["cam01"], "verified_mapping")
+            self.assertFalse(any(issue.severity == "blocking" for issue in report.issues))
+
+    def test_valid_override_remains_usable_when_base_mapping_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = ProjectManager.create(root, "损坏基础映射")
+            (root / "synchronization" / "mapping.json").write_text("{broken", encoding="utf-8")
+            mapping_path = root / "repair.json"
+            mapping_path.write_text(
+                json.dumps({"offsets": [{"camera": "cam01", "frame_delta": 4}]}),
+                encoding="utf-8",
+            )
+            SynchronizationOverrideStore(root).save(
+                SynchronizationOverride("cam01", "repair", None, mapping_path)
+            )
+
+            analyzer = SynchronizationAnalyzer()
+            report = analyzer.analyze(project)
+
+            self.assertEqual(analyzer.mapping("cam01", 8).source_frame, 12)
+            self.assertEqual(report.trust_by_camera["cam01"], "verified_mapping")
+            self.assertTrue(any(issue.severity == "blocking" for issue in report.issues))
+
+    def test_filename_alignment_is_candidate_only_and_cannot_drive_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = ProjectManager.create(root, "文件名候选")
+            for layer, frames in (("pose", (2, 3)), ("pose-sync", (0, 1))):
+                camera = root / layer / "cam01_json"
+                camera.mkdir(parents=True, exist_ok=True)
+                for frame in frames:
+                    (camera / f"cam01_{frame:06d}.json").write_text("{}", encoding="utf-8")
+
+            analyzer = SynchronizationAnalyzer()
+            report = analyzer.analyze(project)
+
+            self.assertEqual(report.trust_by_camera["cam01"], "filename_candidate")
+            with self.assertRaises(KeyError):
+                analyzer.mapping("cam01", 0)
+
+    def test_confirmed_override_invalidates_synchronization_and_downstream(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = ProjectManager.create(root, "人工确认")
+            for record in project.manifest["stages"].values():
+                record["status"] = "completed"
+            project.save_manifest()
+            store = SynchronizationOverrideStore(root)
+
+            store.save(
+                SynchronizationOverride("cam01", "manual", 3, None),
+                project=project,
+            )
+
+            self.assertEqual(project.manifest["stages"]["calibration"]["status"], "completed")
+            self.assertTrue(
+                all(
+                    project.manifest["stages"][stage]["status"] == "stale"
+                    for stage in project.manifest["stages"]
+                    if stage != "calibration"
+                )
+            )
     def test_mapping_reads_camera_offsets_from_project_data_not_camera_branches(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

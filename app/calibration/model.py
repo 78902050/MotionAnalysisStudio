@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.domain.calibration import CalibrationSet
+
 CalibrationSeverity = Literal["info", "warning", "blocking"]
 
 
@@ -15,6 +17,18 @@ class CalibrationFingerprint:
     size: int
     modified_at: str
     camera_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CalibrationPreview:
+    source_path: object
+    source_format: str
+    camera_ids: tuple[str, ...]
+    fingerprint: str
+    equivalent: bool
+    differences: tuple[str, ...]
+    calibration: CalibrationSet
+    issues: tuple[CalibrationIssue, ...] = ()
 
 
 @dataclass(frozen=True)

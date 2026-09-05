@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 from app.domain.addresses import TimelineName
 
 MappingMethod = Literal["identity", "offset", "table", "timestamp"]
+SynchronizationTrust = Literal[
+    "verified_mapping",
+    "confirmed_constant_offset",
+    "filename_candidate",
+    "unavailable",
+]
 
 
 @dataclass(frozen=True)
@@ -84,3 +90,4 @@ class SynchronizationIssue:
 class SynchronizationReport:
     mappings: tuple[FrameMapping, ...]
     issues: tuple[SynchronizationIssue, ...]
+    trust_by_camera: dict[str, SynchronizationTrust] = field(default_factory=dict)

@@ -13,11 +13,6 @@ class CalibrationDiagnosticsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             project = ProjectManager.create(root / "project", "标定诊断")
-            project.manifest["cameras"] = [
-                {"camera_id": "cam01", "display_name": "左前"},
-                {"camera_id": "cam02", "display_name": "右前"},
-            ]
-            project.save_manifest()
             source = root / "calibration.json"
             source.write_text(
                 json.dumps(
@@ -34,6 +29,11 @@ class CalibrationDiagnosticsTests(unittest.TestCase):
                 encoding="utf-8",
             )
             CalibrationImporter().import_file(project, source)
+            project.manifest["cameras"] = [
+                {"camera_id": "cam01", "display_name": "左前"},
+                {"camera_id": "cam02", "display_name": "右前"},
+            ]
+            project.save_manifest()
 
             report = CalibrationDiagnostics().analyze(project)
 

@@ -102,9 +102,9 @@ class MainWindow(QMainWindow):
                 if page_id == "project"
                 else TasksPage(self.controller.supervisor)
                 if page_id == "tasks"
-                else CalibrationPage()
+                else CalibrationPage(controller=self.controller)
                 if page_id == "calibration"
-                else SynchronizationPage()
+                else SynchronizationPage(controller=self.controller)
                 if page_id == "synchronization"
                 else Quality2DPage()
                 if page_id == "quality_2d"

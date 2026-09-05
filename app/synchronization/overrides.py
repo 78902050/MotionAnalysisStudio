@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from app.io.atomic import AtomicJsonStore
+from app.project.manager import ProjectManager
 
 from .model import SynchronizationOverride
 
@@ -27,7 +28,19 @@ class SynchronizationOverrideStore:
             if isinstance(item, dict)
         )
 
-    def save(self, override: SynchronizationOverride) -> None:
-        overrides = [item for item in self.load() if item.camera != override.camera]
+    def save(
+        self,
+        override: SynchronizationOverride,
+        *,
+        project: ProjectManager | None = None,
+    ) -> bool:
+        current = self.load()
+        existing = next((item for item in current if item.camera == override.camera), None)
+        if existing == override:
+            return False
+        overrides = [item for item in current if item.camera != override.camera]
         overrides.append(override)
         AtomicJsonStore.replace(self.path, [item.to_dict() for item in overrides])
+        if project is not None:
+            project.invalidate_from("synchronization", "synchronization override changed")
+        return True

@@ -43,6 +43,14 @@ class CameraCalibration:
         if not isinstance(self.matrix, (list, tuple)) or len(self.matrix) != 3:
             raise ValueError("calibration matrix must be 3x3")
         matrix = tuple(_finite_vector(row, 3, "matrix") for row in self.matrix)
+        if matrix[0][0] <= 0 or matrix[1][1] <= 0:
+            raise ValueError("calibration matrix focal lengths must be positive")
+        if not (
+            math.isclose(matrix[2][0], 0.0, abs_tol=1e-12)
+            and math.isclose(matrix[2][1], 0.0, abs_tol=1e-12)
+            and math.isclose(matrix[2][2], 1.0, abs_tol=1e-12)
+        ):
+            raise ValueError("calibration matrix must have homogeneous row [0, 0, 1]")
         if not isinstance(self.distortions, (list, tuple)):
             raise ValueError("calibration distortions must be an array")
         distortions = _finite_vector(self.distortions, len(self.distortions), "distortions")

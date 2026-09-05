@@ -67,8 +67,8 @@ class CaliscopeCalibrationRepository:
         extrinsics = item.get("extrinsics") if isinstance(item.get("extrinsics"), dict) else {}
         matrix = item.get("matrix")
         if matrix is None:
-            fx = intrinsics.get("fx")
-            fy = intrinsics.get("fy")
+            fx = intrinsics.get("fx", 1.0)
+            fy = intrinsics.get("fy", 1.0)
             cx = intrinsics.get("cx", 0.0)
             cy = intrinsics.get("cy", 0.0)
             matrix = ((fx, 0.0, cx), (0.0, fy, cy), (0.0, 0.0, 1.0))
