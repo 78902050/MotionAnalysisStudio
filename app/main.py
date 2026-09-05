@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from app.diagnostics.bundle import run_gui_smoke, validate_installation
+from app.diagnostics.bundle import run_gui_smoke, run_workflow_smoke, validate_installation
 from app.correction.rerun import CORRECTION_RERUN_STAGES
 
 
@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="load Qt and construct the main window without entering the UI event loop",
     )
+    parser.add_argument(
+        "--workflow-smoke-test",
+        action="store_true",
+        help="exercise quality issue resolution and an auditable correction transaction",
+    )
     parser.add_argument("--pose2sim-stage", choices=CORRECTION_RERUN_STAGES)
     parser.add_argument("--pose2sim-config", type=Path)
     arguments = parser.parse_args(argv)
@@ -52,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_pose2sim_stage(arguments.pose2sim_stage, arguments.pose2sim_config)
     if arguments.gui_smoke_test:
         result = run_gui_smoke()
+        print(result.message, file=sys.stdout if result.ok else sys.stderr)
+        return 0 if result.ok else 1
+    if arguments.workflow_smoke_test:
+        result = run_workflow_smoke()
         print(result.message, file=sys.stdout if result.ok else sys.stderr)
         return 0 if result.ok else 1
     if arguments.smoke_test:

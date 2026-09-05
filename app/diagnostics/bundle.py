@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
@@ -69,6 +70,115 @@ def run_gui_smoke() -> GuiSmokeResult:
     except Exception as exc:
         return GuiSmokeResult(False, f"GUI smoke check failed: {type(exc).__name__}: {exc}", tuple(checks))
     return GuiSmokeResult(True, "GUI smoke check passed", tuple(checks))
+
+
+def run_workflow_smoke() -> GuiSmokeResult:
+    """Exercise the frozen correction transaction without external project data."""
+
+    checks: list[str] = []
+    try:
+        from app.application.quality_correction_service import QualityCorrectionService
+        from app.correction.history import CorrectionHistory
+        from app.domain.addresses import FrameAddress, KeypointAddress, PersonAddress
+        from app.domain.issues import QualityIssue
+        from app.project.manager import ProjectManager
+        from app.quality.model import QualityReport
+        from app.quality.report_store import QualityReportStore
+
+        with tempfile.TemporaryDirectory(prefix="motion-analysis-smoke-") as directory:
+            project = ProjectManager.create(Path(directory) / "project", "workflow smoke")
+            project.manifest["cameras"] = [{"camera_id": "cam01"}]
+            project.manifest["people"] = [{"project_person_id": "person-01"}]
+            project.save_manifest()
+            pose_path = project.root / "pose" / "cam01.json"
+            pose_path.write_text(
+                json.dumps(
+                    {
+                        "camera": "cam01",
+                        "model_name": "smoke-model",
+                        "keypoint_names": ["left_wrist"],
+                        "frames": [
+                            {
+                                "frame": 0,
+                                "people": [
+                                    {
+                                        "project_person_id": "person-01",
+                                        "raw_person_index": 0,
+                                        "keypoints": {
+                                            "left_wrist": {
+                                                "x": 10.0,
+                                                "y": 20.0,
+                                                "confidence": 0.5,
+                                            }
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (project.root / "synchronization" / "mapping.json").write_text(
+                json.dumps({"offsets": [{"camera": "cam01", "frame_delta": 0, "source": "smoke"}]}),
+                encoding="utf-8",
+            )
+            (project.root / "pose-associated" / "results.json").write_text(
+                json.dumps(
+                    {
+                        "frames": [
+                            {
+                                "camera": "cam01",
+                                "frame": 0,
+                                "people": [
+                                    {"project_person_id": "person-01", "raw_person_index": 0}
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            issue = QualityIssue(
+                "workflow-smoke-issue",
+                "reprojection",
+                "warning",
+                FrameAddress("cam01", "pose2d", 0),
+                PersonAddress("person-01"),
+                KeypointAddress("smoke-model", "left_wrist", 0),
+                "workflow smoke",
+            )
+            QualityReportStore(project).save(
+                QualityReport.create("workflow-smoke-report", {}, (issue,), {"pose": "smoke"})
+            )
+            checks.append("project fixture")
+
+            service = QualityCorrectionService(project)
+            resolution = service.resolve_issue(issue)
+            if not resolution.can_edit or resolution.edit_target is None:
+                raise RuntimeError(resolution.blocker or "quality issue did not resolve")
+            session = service.create_session(resolution)
+            before = session.document.value_at(resolution.edit_target)
+            session.apply_point(resolution.edit_target, before[0] + 1.0, before[1] + 1.0)
+            saved_count, _operation_ids = session.save(note="workflow smoke")
+            if saved_count != 1:
+                raise RuntimeError(f"expected one saved operation, got {saved_count}")
+            checks.append("correction save")
+
+            history = CorrectionHistory(project.root)
+            if not history.backup_path(pose_path).is_file():
+                raise RuntimeError("first-version pose backup was not created")
+            if history.restore_file(pose_path, "workflow smoke restore") != 1:
+                raise RuntimeError("pose restore did not produce one audit operation")
+            checks.append("backup restore")
+    except Exception as exc:
+        return GuiSmokeResult(
+            False,
+            f"Workflow smoke check failed: {type(exc).__name__}: {exc}",
+            tuple(checks),
+        )
+    return GuiSmokeResult(True, "Workflow smoke check passed", tuple(checks))
 
 
 def validate_installation(include_external: bool = True) -> list[str]:

@@ -1,8 +1,8 @@
 param(
     [Alias("Exe")]
     [string]$Executable = "",
-    [ValidateSet("Gui", "Capabilities")]
-    [string]$Mode = "Gui"
+    [ValidateSet("Gui", "Workflow", "Capabilities", "All")]
+    [string]$Mode = "All"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,9 +14,16 @@ if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
     throw "Executable not found: $Executable. Run scripts/build_windows.ps1 first."
 }
 
-$argument = if ($Mode -eq "Gui") { "--gui-smoke-test" } else { "--smoke-test" }
-$process = Start-Process -FilePath $Executable -ArgumentList $argument -Wait -PassThru -WindowStyle Hidden
-if ($process.ExitCode -ne 0) {
-    throw "MotionAnalysisStudio.exe $Mode smoke test failed with exit code $($process.ExitCode)"
+$checks = if ($Mode -eq "All") { @("Gui", "Workflow", "Capabilities") } else { @($Mode) }
+foreach ($check in $checks) {
+    $argument = switch ($check) {
+        "Gui" { "--gui-smoke-test" }
+        "Workflow" { "--workflow-smoke-test" }
+        default { "--smoke-test" }
+    }
+    $process = Start-Process -FilePath $Executable -ArgumentList $argument -Wait -PassThru -WindowStyle Hidden
+    if ($process.ExitCode -ne 0) {
+        throw "MotionAnalysisStudio.exe $check smoke test failed with exit code $($process.ExitCode)"
+    }
+    Write-Output "MotionAnalysisStudio.exe $check smoke test passed"
 }
-Write-Output "MotionAnalysisStudio.exe $Mode smoke test passed"

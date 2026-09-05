@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.adapters.pose2sim.pose2d_repository import Pose2DRepository
 from app.correction.history import CorrectionHistory
 from app.correction.session import CorrectionSession
 from app.domain.addresses import CorrectionTarget, FrameAddress, KeypointAddress, PersonAddress
@@ -198,6 +199,43 @@ class CorrectionHistoryTests(unittest.TestCase):
                 {"added", "removed", "modified"},
             )
             self.assertEqual(json.loads(pose_path.read_text(encoding="utf-8")), original)
+
+    def test_restore_audits_pose2sim_flat_keypoint_arrays(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ProjectManager.create(root, "Pose2Sim 恢复")
+            pose_path = root / "pose" / "cam01_json" / "cam01_000012.json"
+            pose_path.parent.mkdir(parents=True)
+            original = {
+                "version": 1.3,
+                "people": [
+                    {
+                        "person_id": [-1],
+                        "pose_keypoints_2d": [10.0, 20.0, 0.2],
+                    }
+                ],
+            }
+            pose_path.write_text(json.dumps(original), encoding="utf-8")
+            repository = Pose2DRepository(
+                root / "pose",
+                ("left_wrist",),
+                project_root=root,
+                model_name="coco17",
+            )
+            document = repository.load_frame("cam01", 12)
+            session = CorrectionSession(document, project_root=root, session_id="flat-session")
+            session.apply_point(_target(), 30.0, 40.0)
+            self.assertEqual(session.save(note="flat save")[0], 1)
+
+            history = CorrectionHistory(root)
+            self.assertEqual(history.restore_file(pose_path, "flat restore"), 1)
+
+            restored = json.loads(pose_path.read_text(encoding="utf-8"))
+            self.assertEqual(restored, original)
+            operation = history.operations()[-1]
+            self.assertEqual(operation.target.keypoint.keypoint_name, "left_wrist")
+            self.assertEqual(operation.before, (30.0, 40.0, 1.0))
+            self.assertEqual(operation.after, (10.0, 20.0, 0.2))
 
 
 if __name__ == "__main__":

@@ -15,6 +15,11 @@ class PhaseAcceptanceTests(unittest.TestCase):
         self.assertEqual(validate_installation(), [])
         self.assertEqual(main(["--smoke-test"]), 0)
 
+    def test_workflow_smoke_entrypoint_runs_the_correction_transaction(self) -> None:
+        from app.main import main
+
+        self.assertEqual(main(["--workflow-smoke-test"]), 0)
+
     def test_diagnostic_bundle_redacts_paths_and_excludes_project_inputs(self) -> None:
         from app.diagnostics.bundle import DiagnosticBundle
 

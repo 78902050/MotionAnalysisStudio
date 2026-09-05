@@ -10,6 +10,12 @@ class SmokeScriptWaitTests(unittest.TestCase):
         self.assertIn("-Wait", script)
         self.assertIn("ExitCode", script)
 
+    def test_smoke_script_can_run_gui_and_capability_checks_together(self) -> None:
+        script = Path("scripts/smoke_exe.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('ValidateSet("Gui", "Workflow", "Capabilities", "All")', script)
+        self.assertIn('@("Gui", "Workflow", "Capabilities")', script)
+
 
 if __name__ == "__main__":
     unittest.main()

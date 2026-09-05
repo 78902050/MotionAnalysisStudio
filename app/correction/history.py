@@ -17,55 +17,114 @@ from app.project.manifest import utc_now
 from .model import CorrectionOperation
 
 
-def _point_index(data: dict[str, object], fallback_camera: str) -> dict[tuple[int, str, str], tuple[CorrectionTarget, tuple[float, float, float]]]:
+def _point_index(
+    data: dict[str, object],
+    fallback_camera: str,
+    fallback_frame: int = 0,
+    known_targets: tuple[CorrectionTarget, ...] = (),
+) -> dict[tuple[int, str, str], tuple[CorrectionTarget, tuple[float, float, float]]]:
     camera = str(data.get("camera", fallback_camera))
     model_name = str(data.get("model_name", "unknown"))
     names = data.get("keypoint_names", [])
     keypoint_names = list(names) if isinstance(names, list) else []
     result: dict[tuple[int, str, str], tuple[CorrectionTarget, tuple[float, float, float]]] = {}
     frames = data.get("frames", [])
-    if not isinstance(frames, list):
-        return result
-    for frame_value in frames:
-        if not isinstance(frame_value, dict) or not isinstance(frame_value.get("frame"), int):
-            continue
-        frame = frame_value["frame"]
-        people = frame_value.get("people", [])
-        if not isinstance(people, list):
-            continue
-        for ordinal, person_value in enumerate(people):
-            if not isinstance(person_value, dict):
+    if isinstance(frames, list):
+        for frame_value in frames:
+            if not isinstance(frame_value, dict) or not isinstance(frame_value.get("frame"), int):
                 continue
-            raw_index = person_value.get("raw_person_index", ordinal)
-            if not isinstance(raw_index, int):
-                raw_index = ordinal
-            project_person_id = str(person_value.get("project_person_id", f"raw-{raw_index}"))
-            person = PersonAddress(
-                project_person_id,
-                person_value.get("track_segment_id") if isinstance(person_value.get("track_segment_id"), str) else None,
-                raw_index,
-            )
-            keypoints = person_value.get("keypoints", {})
-            if not isinstance(keypoints, dict):
+            frame = frame_value["frame"]
+            people = frame_value.get("people", [])
+            if not isinstance(people, list):
                 continue
-            for keypoint_name, point_value in keypoints.items():
-                if not isinstance(keypoint_name, str) or not isinstance(point_value, dict):
+            for ordinal, person_value in enumerate(people):
+                if not isinstance(person_value, dict):
                     continue
-                try:
-                    point = (
-                        float(point_value["x"]),
-                        float(point_value["y"]),
-                        float(point_value.get("confidence", 0.0)),
-                    )
-                except (KeyError, TypeError, ValueError):
-                    continue
-                source_index = keypoint_names.index(keypoint_name) if keypoint_name in keypoint_names else None
-                target = CorrectionTarget(
-                    FrameAddress(camera, "pose2d", frame),
-                    person,
-                    KeypointAddress(model_name, keypoint_name, source_index),
+                raw_index = person_value.get("raw_person_index", ordinal)
+                if not isinstance(raw_index, int):
+                    raw_index = ordinal
+                project_person_id = str(person_value.get("project_person_id", f"raw-{raw_index}"))
+                person = PersonAddress(
+                    project_person_id,
+                    person_value.get("track_segment_id") if isinstance(person_value.get("track_segment_id"), str) else None,
+                    raw_index,
                 )
-                result[(frame, project_person_id, keypoint_name)] = (target, point)
+                keypoints = person_value.get("keypoints", {})
+                if not isinstance(keypoints, dict):
+                    continue
+                for keypoint_name, point_value in keypoints.items():
+                    if not isinstance(keypoint_name, str) or not isinstance(point_value, dict):
+                        continue
+                    try:
+                        point = (
+                            float(point_value["x"]),
+                            float(point_value["y"]),
+                            float(point_value.get("confidence", 0.0)),
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    source_index = keypoint_names.index(keypoint_name) if keypoint_name in keypoint_names else None
+                    target = CorrectionTarget(
+                        FrameAddress(camera, "pose2d", frame),
+                        person,
+                        KeypointAddress(model_name, keypoint_name, source_index),
+                    )
+                    result[(frame, project_person_id, keypoint_name)] = (target, point)
+
+    flat_people = data.get("people")
+    if not isinstance(flat_people, list):
+        return result
+    known_by_index = {
+        (target.person.raw_person_index, target.keypoint.source_index): target
+        for target in known_targets
+        if target.address.camera == camera
+        and target.address.frame == fallback_frame
+        and target.person.raw_person_index is not None
+        and target.keypoint.source_index is not None
+    }
+    for ordinal, person_value in enumerate(flat_people):
+        if not isinstance(person_value, dict):
+            continue
+        raw_index = person_value.get("raw_person_index", ordinal)
+        if not isinstance(raw_index, int) or isinstance(raw_index, bool):
+            raw_index = ordinal
+        values = person_value.get("pose_keypoints_2d")
+        if not isinstance(values, list) or len(values) % 3:
+            continue
+        for source_index in range(len(values) // 3):
+            start = source_index * 3
+            try:
+                point = tuple(float(item) for item in values[start : start + 3])
+            except (TypeError, ValueError):
+                continue
+            known = known_by_index.get((raw_index, source_index))
+            keypoint_name = (
+                known.keypoint.keypoint_name
+                if known is not None
+                else keypoint_names[source_index]
+                if source_index < len(keypoint_names)
+                else f"index-{source_index:03d}"
+            )
+            project_person_id = (
+                known.person.project_person_id
+                if known is not None
+                else str(person_value.get("project_person_id", f"raw-{raw_index}"))
+            )
+            target = known or CorrectionTarget(
+                FrameAddress(camera, "raw", fallback_frame),
+                PersonAddress(
+                    project_person_id,
+                    person_value.get("track_segment_id")
+                    if isinstance(person_value.get("track_segment_id"), str)
+                    else None,
+                    raw_index,
+                ),
+                KeypointAddress(model_name, keypoint_name, source_index),
+            )
+            result[(fallback_frame, f"raw-{raw_index}", keypoint_name)] = (
+                target,
+                point,  # type: ignore[arg-type]
+            )
     return result
 
 
@@ -177,8 +236,12 @@ class CorrectionHistory:
         if not isinstance(current_value, dict) or not isinstance(backup_value, dict):
             raise ValueError("pose JSON must contain an object")
 
-        current = _point_index(current_value, json_path.stem)
-        original = _point_index(backup_value, json_path.stem)
+        camera = json_path.parent.name.removesuffix("_json")
+        frame_text = json_path.stem.rsplit("_", 1)[-1]
+        frame = int(frame_text) if frame_text.isdigit() else 0
+        known_targets = tuple(operation.target for operation in self.operations())
+        current = _point_index(current_value, camera, frame, known_targets)
+        original = _point_index(backup_value, camera, frame, known_targets)
         operations: list[CorrectionOperation] = []
         now = datetime.now(timezone.utc).isoformat()
         session_id = f"restore-{uuid4().hex}"
