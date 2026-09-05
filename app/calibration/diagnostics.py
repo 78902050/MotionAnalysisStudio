@@ -48,6 +48,11 @@ class CalibrationDiagnostics:
                     camera_id=camera_id,
                     reprojection_error=item.reprojection_error,
                     coverage=None,
+                    image_size=item.image_size,
+                    matrix=item.matrix,
+                    distortions=item.distortions,
+                    rotation=item.rotation,
+                    translation=item.translation,
                 )
             )
 

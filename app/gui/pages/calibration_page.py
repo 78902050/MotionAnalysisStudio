@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QComboBox,
     QFormLayout,
     QFrame,
     QFileDialog,
@@ -13,13 +14,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QPushButton,
+    QScrollArea,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
 from app.calibration.diagnostics import CalibrationDiagnostics
 from app.calibration.importer import CalibrationImporter
-from app.calibration.model import CalibrationPreview
+from app.calibration.model import CalibrationCameraReport, CalibrationPreview
 from app.application.controller import ApplicationController
 from app.project.manager import ProjectManager
 from app.tasks.base import TaskRequest
@@ -40,6 +43,7 @@ class CalibrationPage(QWidget):
         self.importer = CalibrationImporter()
         self.diagnostics = CalibrationDiagnostics()
         self.pending_preview: CalibrationPreview | None = None
+        self._camera_reports: dict[str, CalibrationCameraReport] = {}
         self._preview_handle: TaskHandle | None = None
         self._preview_timer = QTimer(self)
         self._preview_timer.setInterval(25)
@@ -107,9 +111,86 @@ class CalibrationPage(QWidget):
         preview_form.addRow("预览状态", self.preview_status)
         layout.addWidget(preview_card)
 
+        details_splitter = QSplitter(Qt.Orientation.Horizontal)
+        details_splitter.setObjectName("calibration_details_splitter")
+
+        parameter_scroll = QScrollArea()
+        parameter_scroll.setObjectName("calibration_parameter_scroll")
+        parameter_scroll.setWidgetResizable(True)
+        parameter_card = QFrame()
+        parameter_card.setObjectName("calibration_parameter_card")
+        parameter_form = QFormLayout(parameter_card)
+        self.camera_selector = QComboBox()
+        self.camera_selector.setObjectName("calibration_camera_selector")
+        self.camera_selector.currentTextChanged.connect(self._show_camera_parameters)
+        parameter_form.addRow("相机", self.camera_selector)
+        self.image_size_value = self._parameter_label("calibration_image_size_value")
+        self.matrix_value = self._parameter_label("calibration_matrix_value")
+        self.distortions_value = self._parameter_label("calibration_distortions_value")
+        self.rotation_value = self._parameter_label("calibration_rotation_value")
+        self.translation_value = self._parameter_label("calibration_translation_value")
+        self.error_value = self._parameter_label("calibration_error_value")
+        parameter_form.addRow("图像尺寸", self.image_size_value)
+        parameter_form.addRow("相机矩阵 K", self.matrix_value)
+        parameter_form.addRow("畸变系数", self.distortions_value)
+        parameter_form.addRow("旋转向量", self.rotation_value)
+        parameter_form.addRow("平移向量", self.translation_value)
+        parameter_form.addRow("重投影误差", self.error_value)
+        parameter_scroll.setWidget(parameter_card)
+        details_splitter.addWidget(parameter_scroll)
+
         self.diagnostics_list = QListWidget()
         self.diagnostics_list.setObjectName("calibration_diagnostics_list")
-        layout.addWidget(self.diagnostics_list, 1)
+        details_splitter.addWidget(self.diagnostics_list)
+        details_splitter.setStretchFactor(0, 2)
+        details_splitter.setStretchFactor(1, 1)
+        layout.addWidget(details_splitter, 1)
+
+    @staticmethod
+    def _parameter_label(object_name: str) -> QLabel:
+        label = QLabel("—")
+        label.setObjectName(object_name)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        return label
+
+    @staticmethod
+    def _format_values(values: tuple[float, ...]) -> str:
+        return "[" + ", ".join(f"{value:.6f}" for value in values) + "]"
+
+    def _set_camera_reports(self, reports: tuple[CalibrationCameraReport, ...]) -> None:
+        previous = self.camera_selector.currentText()
+        self._camera_reports = {report.camera_id: report for report in reports}
+        self.camera_selector.blockSignals(True)
+        self.camera_selector.clear()
+        self.camera_selector.addItems(list(self._camera_reports))
+        if previous in self._camera_reports:
+            self.camera_selector.setCurrentText(previous)
+        self.camera_selector.blockSignals(False)
+        self._show_camera_parameters(self.camera_selector.currentText())
+
+    def _show_camera_parameters(self, camera_id: str) -> None:
+        report = self._camera_reports.get(camera_id)
+        if report is None:
+            for label in (
+                self.image_size_value,
+                self.matrix_value,
+                self.distortions_value,
+                self.rotation_value,
+                self.translation_value,
+                self.error_value,
+            ):
+                label.setText("—")
+            return
+        width, height = report.image_size
+        self.image_size_value.setText(f"{width} × {height}")
+        self.matrix_value.setText("\n".join(self._format_values(row) for row in report.matrix))
+        self.distortions_value.setText(self._format_values(report.distortions))
+        self.rotation_value.setText(self._format_values(report.rotation))
+        self.translation_value.setText(self._format_values(report.translation))
+        self.error_value.setText(
+            "—" if report.reprojection_error is None else f"{report.reprojection_error:.6f} px"
+        )
 
     def set_project(self, project: ProjectManager | None) -> None:
         self._preview_timer.stop()
@@ -247,12 +328,14 @@ class CalibrationPage(QWidget):
             self.active_path.setText("未打开项目")
             self.fingerprint.setText("—")
             self.camera_summary.setText("—")
+            self._set_camera_reports(())
             self.diagnostics_list.addItem("请先打开项目")
             return
         report = self.diagnostics.analyze(self.project)
         self.active_path.setText(str(report.active_path) if report.active_path is not None else "—")
         self.fingerprint.setText(report.fingerprint or "—")
         self.camera_summary.setText(", ".join(report.camera_ids) or "—")
+        self._set_camera_reports(report.cameras)
         if not report.issues:
             self.diagnostics_list.addItem("诊断通过：未发现问题")
         for issue in report.issues:

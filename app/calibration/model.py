@@ -43,6 +43,11 @@ class CalibrationCameraReport:
     camera_id: str
     reprojection_error: float | None
     coverage: float | None
+    image_size: tuple[int, int]
+    matrix: tuple[tuple[float, float, float], ...]
+    distortions: tuple[float, ...]
+    rotation: tuple[float, float, float]
+    translation: tuple[float, float, float]
 
 
 @dataclass(frozen=True)
