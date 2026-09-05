@@ -39,9 +39,19 @@ class AssociationAnalyzer:
         self._project: ProjectManager | None = None
 
     def analyze(self, project: ProjectManager, report: QualityReport) -> AssociationReport:
-        del report
         self._project = project
         issues: list[AssociationIssue] = []
+        for quality_issue in report.issues():
+            if quality_issue.severity == "blocking":
+                issues.append(
+                    AssociationIssue(
+                        "blocking",
+                        f"quality report blocker: {quality_issue.message}",
+                        quality_issue.target.camera if quality_issue.target is not None else None,
+                        quality_issue.target.frame if quality_issue.target is not None else None,
+                        "quality_blocking",
+                    )
+                )
         raw_frame_keys: set[tuple[str, int]] = set()
         raw = self._load_layer(project.root / "pose", "raw pose", issues, raw_frame_keys)
         synchronized = self._load_layer(project.root / "pose-sync", "synchronized pose", issues)
@@ -64,23 +74,19 @@ class AssociationAnalyzer:
         for item in raw:
             raw_by_key.setdefault((item.camera, item.frame), []).append(item)
 
-        associated_by_key: dict[tuple[str, int, int], list[_Detection]] = {}
+        associated_by_frame: dict[tuple[str, int], list[_Detection]] = {}
         for item in associated:
             if item.project_person_id is None:
                 continue
-            associated_by_key.setdefault(
-                (item.camera, item.frame, item.raw_person_index), []
-            ).append(item)
+            associated_by_frame.setdefault((item.camera, item.frame), []).append(item)
 
         exact_assignments: list[tuple[str, str, int, int]] = []
         candidates: list[AssociationCandidate] = []
         non_exact_groups: dict[tuple[str, int, str], list[AssociationCandidate]] = {}
-        history_by_person: dict[tuple[str, str], set[int]] = {}
+        history_by_person: dict[tuple[str, str], list[_Detection]] = {}
         for item in associated:
             if item.project_person_id:
-                history_by_person.setdefault((item.camera, item.project_person_id), set()).add(
-                    item.raw_person_index
-                )
+                history_by_person.setdefault((item.camera, item.project_person_id), []).append(item)
 
         for detection in synchronized:
             try:
@@ -107,9 +113,11 @@ class AssociationAnalyzer:
                     )
                 )
 
-            assignments = associated_by_key.get(
-                (detection.camera, detection.frame, detection.raw_person_index), []
-            )
+            assignments = [
+                item
+                for item in associated_by_frame.get((detection.camera, detection.frame), ())
+                if item.fingerprint.value_hash == detection.fingerprint.value_hash
+            ]
             assigned_ids = sorted({item.project_person_id for item in assignments if item.project_person_id})
             if len(assigned_ids) > 1:
                 issues.append(
@@ -128,7 +136,9 @@ class AssociationAnalyzer:
                     "exact",
                     1.0,
                     True,
-                    "existing association layer identifies this project person at the same synchronized frame",
+                    "同一同步帧中的归一化骨架与已有语义关联一致",
+                    ("同帧归一化骨架指纹一致",),
+                    (),
                 )
                 candidates.append(candidate)
                 exact_assignments.append(
@@ -138,20 +148,26 @@ class AssociationAnalyzer:
             for person_id, person_record in project_people:
                 if person_id in assigned_ids:
                     continue
-                history = history_by_person.get((detection.camera, person_id), set())
                 reference_hash = self._reference_hash(person_record)
                 if reference_hash and reference_hash == detection.fingerprint.value_hash:
-                    method = "spatial"
+                    method = "shape"
                     score = 0.95
-                    explanation = "skeleton fingerprint matches the project-person reference; manual confirmation required"
-                elif detection.raw_person_index in history:
+                    explanation = "归一化骨架与项目人物的人工参考指纹一致；仍需人工确认"
+                    evidence = ("人工参考骨架指纹一致",)
+                    conflicts: tuple[str, ...] = ()
+                elif temporal := self._temporal_evidence(
+                    detection,
+                    history_by_person.get((detection.camera, person_id), ()),
+                ):
                     method = "temporal"
-                    score = 0.75
-                    explanation = "raw person index is consistent with a previous track segment; manual confirmation required"
+                    score, evidence, conflicts = temporal
+                    explanation = "骨架形状和相邻帧运动连续性均在门限内；仍需人工确认"
                 else:
-                    method = "spatial"
-                    score = 0.5
-                    explanation = "candidate is based on the available synchronized skeleton; manual confirmation required"
+                    method = "manual"
+                    score = 0.0
+                    explanation = "缺少可靠身份依据，仅可由人工观察后确认"
+                    evidence = ("该同步帧存在有效二维检测",)
+                    conflicts = ("没有同帧匹配、人工参考指纹或门限内的时间连续性证据",)
                 candidate = self._candidate(
                     detection,
                     person_id,
@@ -159,6 +175,8 @@ class AssociationAnalyzer:
                     score,
                     False,
                     explanation,
+                    evidence,
+                    conflicts,
                 )
                 candidates.append(candidate)
                 non_exact_groups.setdefault((detection.camera, detection.frame, person_id), []).append(candidate)
@@ -398,9 +416,117 @@ class AssociationAnalyzer:
         points: dict[str, tuple[float, float, float]],
     ) -> SkeletonFingerprint:
         model_name = str(person.get("model_name", frame.get("model_name", "pose2d")))
-        normalized = [[name, *points[name]] for name in sorted(points)]
+        normalized_points = AssociationAnalyzer._normalized_shape(points)
+        normalized = [[name, *normalized_points[name]] for name in sorted(normalized_points)]
         value = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
-        return SkeletonFingerprint(model_name, tuple(sorted(points)), hashlib.sha256(value.encode("utf-8")).hexdigest())
+        return SkeletonFingerprint(model_name, tuple(sorted(normalized_points)), hashlib.sha256(value.encode("utf-8")).hexdigest())
+
+    @staticmethod
+    def _normalized_shape(
+        points: dict[str, tuple[float, float, float]],
+    ) -> dict[str, tuple[float, float]]:
+        visible = {name: point for name, point in points.items() if point[2] > 0.0}
+        if not visible:
+            visible = dict(points)
+        torso_names = (
+            "left_shoulder",
+            "right_shoulder",
+            "left_hip",
+            "right_hip",
+        )
+        anchors = [visible[name] for name in torso_names if name in visible]
+        anchor_points = anchors if len(anchors) >= 2 else list(visible.values())
+        center_x = sum(point[0] for point in anchor_points) / len(anchor_points)
+        center_y = sum(point[1] for point in anchor_points) / len(anchor_points)
+
+        scales: list[float] = []
+        for first, second in (("left_shoulder", "right_shoulder"), ("left_hip", "right_hip")):
+            if first in visible and second in visible:
+                scales.append(math.dist(visible[first][:2], visible[second][:2]))
+        if all(name in visible for name in torso_names):
+            shoulder_mid = (
+                (visible["left_shoulder"][0] + visible["right_shoulder"][0]) / 2,
+                (visible["left_shoulder"][1] + visible["right_shoulder"][1]) / 2,
+            )
+            hip_mid = (
+                (visible["left_hip"][0] + visible["right_hip"][0]) / 2,
+                (visible["left_hip"][1] + visible["right_hip"][1]) / 2,
+            )
+            scales.append(math.dist(shoulder_mid, hip_mid))
+        scale = max((value for value in scales if value > 1e-9), default=0.0)
+        if scale <= 0.0:
+            scale = math.sqrt(
+                sum((point[0] - center_x) ** 2 + (point[1] - center_y) ** 2 for point in visible.values())
+                / max(len(visible), 1)
+            )
+        scale = max(scale, 1e-9)
+        return {
+            name: (round((point[0] - center_x) / scale, 6), round((point[1] - center_y) / scale, 6))
+            for name, point in visible.items()
+        }
+
+    @staticmethod
+    def _shape_distance(first: _Detection, second: _Detection) -> float | None:
+        first_shape = AssociationAnalyzer._normalized_shape(first.points)
+        second_shape = AssociationAnalyzer._normalized_shape(second.points)
+        names = sorted(set(first_shape) & set(second_shape))
+        if len(names) < 2:
+            return None
+        return math.sqrt(
+            sum(
+                (first_shape[name][0] - second_shape[name][0]) ** 2
+                + (first_shape[name][1] - second_shape[name][1]) ** 2
+                for name in names
+            )
+            / len(names)
+        )
+
+    @staticmethod
+    def _center_and_scale(detection: _Detection) -> tuple[tuple[float, float], float]:
+        values = list(detection.points.values())
+        center = (
+            sum(point[0] for point in values) / len(values),
+            sum(point[1] for point in values) / len(values),
+        )
+        scale = math.sqrt(
+            sum((point[0] - center[0]) ** 2 + (point[1] - center[1]) ** 2 for point in values)
+            / len(values)
+        )
+        return center, max(scale, 1.0)
+
+    @staticmethod
+    def _temporal_evidence(
+        detection: _Detection,
+        history: tuple[_Detection, ...] | list[_Detection],
+    ) -> tuple[float, tuple[str, ...], tuple[str, ...]] | None:
+        nearby = [item for item in history if 0 < abs(item.frame - detection.frame) <= 3]
+        if not nearby:
+            return None
+        ranked: list[tuple[float, int, _Detection]] = []
+        for item in nearby:
+            distance = AssociationAnalyzer._shape_distance(detection, item)
+            if distance is not None:
+                ranked.append((distance, abs(item.frame - detection.frame), item))
+        if not ranked:
+            return None
+        shape_distance, gap, nearest = min(ranked, key=lambda value: (value[0], value[1]))
+        if shape_distance > 0.18:
+            return None
+        center, scale = AssociationAnalyzer._center_and_scale(detection)
+        reference_center, reference_scale = AssociationAnalyzer._center_and_scale(nearest)
+        motion_error = math.dist(center, reference_center) / max(scale, reference_scale)
+        motion_limit = 1.5 * gap
+        if motion_error > motion_limit:
+            return None
+        score = max(0.55, min(0.9, 0.9 - shape_distance - 0.08 * motion_error))
+        evidence = (
+            f"相邻 {gap} 帧的归一化骨架差 {shape_distance:.3f}（门限 0.180）",
+            f"运动位移 {motion_error:.3f} 个躯干尺度（门限 {motion_limit:.3f}）",
+        )
+        has_before = any(item.frame < detection.frame for item in nearby)
+        has_after = any(item.frame > detection.frame for item in nearby)
+        conflicts = () if has_before and has_after else ("只有单侧时间邻域证据",)
+        return score, evidence, conflicts
 
     @staticmethod
     def _candidate(
@@ -410,6 +536,8 @@ class AssociationAnalyzer:
         score: float,
         exact: bool,
         explanation: str,
+        evidence: tuple[str, ...] = (),
+        conflicts: tuple[str, ...] = (),
     ) -> AssociationCandidate:
         candidate_id = f"candidate-{project_person_id}-{detection.camera}-{detection.frame}-{detection.raw_person_index}"
         return AssociationCandidate(
@@ -423,6 +551,8 @@ class AssociationAnalyzer:
             method,  # type: ignore[arg-type]
             explanation,
             exact,
+            evidence,
+            conflicts,
         )
 
     @staticmethod

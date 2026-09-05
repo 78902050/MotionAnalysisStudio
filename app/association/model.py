@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-AssociationMethod = Literal["exact", "spatial", "temporal"]
+AssociationMethod = Literal["exact", "spatial", "temporal", "shape", "manual"]
 AssociationIssueSeverity = Literal["warning", "blocking"]
 
 
@@ -53,6 +53,8 @@ class AssociationCandidate:
     method: AssociationMethod
     explanation: str
     exact: bool
+    evidence: tuple[str, ...] = ()
+    conflicts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.candidate_id.strip() or not self.project_person_id.strip():
@@ -78,6 +80,8 @@ class AssociationCandidate:
             "method": self.method,
             "explanation": self.explanation,
             "exact": self.exact,
+            "evidence": list(self.evidence),
+            "conflicts": list(self.conflicts),
         }
 
 

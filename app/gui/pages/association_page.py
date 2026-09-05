@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
@@ -18,11 +18,14 @@ from PySide6.QtWidgets import (
 
 from app.association.analyzer import AssociationAnalyzer
 from app.association.materializer import AssociationMaterializer
-from app.association.model import AssociationReport
+from app.association.model import AssociationReport, MaterializeResult
 from app.association.overrides import AssociationOverrideStore
+from app.application.controller import ApplicationController
 from app.project.manager import ProjectManager
 from app.quality.model import QualityReport
 from app.quality.report_store import QualityReportStore
+from app.tasks.base import TaskRequest
+from app.tasks.handle import TaskHandle
 
 from ..layout import make_scrollable_panel
 
@@ -51,14 +54,25 @@ class _AssociationWorker(QObject):
 
 
 class AssociationPage(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        controller: ApplicationController | None = None,
+    ) -> None:
         super().__init__(parent)
+        self.controller = controller
         self.project: ProjectManager | None = None
         self.report: AssociationReport | None = None
         self._generation = 0
         self._project_id = ""
         self._thread: QThread | None = None
         self._worker: _AssociationWorker | None = None
+        self._materialize_handle: TaskHandle | None = None
+        self._materialize_constraint_count = 0
+        self._materialize_timer = QTimer(self)
+        self._materialize_timer.setInterval(25)
+        self._materialize_timer.timeout.connect(self._poll_materialize)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -105,19 +119,27 @@ class AssociationPage(QWidget):
         self.selected_fingerprint = QLabel("—")
         self.selected_explanation = QLabel("—")
         self.selected_explanation.setWordWrap(True)
+        self.selected_evidence = QLabel("—")
+        self.selected_evidence.setWordWrap(True)
+        self.selected_conflicts = QLabel("—")
+        self.selected_conflicts.setWordWrap(True)
         details_layout.addRow("选中项目人物", self.selected_person)
         details_layout.addRow("选中目标", self.selected_target)
         details_layout.addRow("骨架指纹", self.selected_fingerprint)
         details_layout.addRow("候选解释", self.selected_explanation)
+        details_layout.addRow("支持证据", self.selected_evidence)
+        details_layout.addRow("冲突/限制", self.selected_conflicts)
         layout.addWidget(details)
 
         actions = QHBoxLayout()
         self.confirm_button = QPushButton("确认选中候选")
         self.confirm_button.setObjectName("association_confirm_button")
         self.confirm_button.clicked.connect(self.confirm_selected)
+        self.confirm_button.setEnabled(False)
         self.materialize_button = QPushButton("物化已确认关联")
         self.materialize_button.setObjectName("association_materialize_button")
         self.materialize_button.clicked.connect(self.materialize)
+        self.materialize_button.setEnabled(False)
         self.restore_button = QPushButton("恢复上次物化")
         self.restore_button.setObjectName("association_restore_button")
         self.restore_button.clicked.connect(self.restore)
@@ -134,12 +156,17 @@ class AssociationPage(QWidget):
         outer.addWidget(scroll)
 
     def set_project(self, project: ProjectManager | None) -> None:
+        if self._materialize_handle is not None:
+            self._materialize_handle.cancel()
+        self._materialize_timer.stop()
+        self._materialize_handle = None
         self._generation += 1
         self.project = project
         self._project_id = str(project.manifest.get("project_id", "")) if project else ""
         self.report = None
         self.candidate_table.setRowCount(0)
         self._clear_selected()
+        self.materialize_button.setEnabled(False)
         self.status.setText("已打开项目；点击“扫描关联候选”开始后台分析" if project else "请先打开项目")
 
     def refresh(self) -> None:
@@ -177,6 +204,8 @@ class AssociationPage(QWidget):
         self.report = report
         self._fill_candidates(report)
         blocking = sum(issue.severity == "blocking" for issue in report.issues)
+        self.materialize_button.setEnabled(not report.has_blocking_issues)
+        self.confirm_button.setEnabled(False)
         self.status.setText(f"已找到 {len(report.candidates)} 个候选，{len(report.track_segments)} 个轨迹段；阻塞问题 {blocking} 个")
 
     @Slot(str, int, str)
@@ -227,17 +256,26 @@ class AssociationPage(QWidget):
         )
         self.selected_fingerprint.setText(candidate.fingerprint.value_hash[:16])
         self.selected_explanation.setText(candidate.explanation)
+        self.selected_evidence.setText("\n".join(candidate.evidence) or "—")
+        self.selected_conflicts.setText("\n".join(candidate.conflicts) or "—")
+        self.confirm_button.setEnabled(self.report is not None and not self.report.has_blocking_issues)
 
     def _clear_selected(self) -> None:
         self.selected_person.setText("—")
         self.selected_target.setText("—")
         self.selected_fingerprint.setText("—")
         self.selected_explanation.setText("—")
+        self.selected_evidence.setText("—")
+        self.selected_conflicts.setText("—")
+        self.confirm_button.setEnabled(False)
 
     def confirm_selected(self) -> None:
         candidate = self._selected_candidate()
         if self.project is None or candidate is None:
             self.status.setText("请先扫描并选择一个候选")
+            return
+        if self.report is not None and self.report.has_blocking_issues:
+            self.status.setText("存在阻断问题，不能确认关联")
             return
         override = AssociationOverrideStore(self.project.root).save_confirmed(candidate)
         self.status.setText(f"已确认 {override.project_person_id} 在 {override.camera} 同步帧 {override.synchronized_frame} 的关联")
@@ -246,10 +284,60 @@ class AssociationPage(QWidget):
         if self.project is None or self.report is None:
             self.status.setText("请先打开项目并完成关联扫描")
             return
+        if self.report.has_blocking_issues:
+            self.status.setText("存在阻断问题，不能物化关联")
+            return
         constraints = AssociationOverrideStore(self.project.root).effective_constraints(self.report)
+        if self.controller is not None and self.controller.current_project is self.project:
+            request = TaskRequest(
+                str(self.project.manifest["project_id"]),
+                self.controller.generation,
+                "association-materialize",
+                {"constraint_count": len(constraints)},
+            )
+            project = self.project
+
+            def work(token):
+                return AssociationMaterializer().materialize(project, constraints, token=token)
+
+            self._materialize_handle = self.controller.start_task(request, work)
+            self._materialize_constraint_count = len(constraints)
+            self._materialize_timer.start()
+            self.materialize_button.setEnabled(False)
+            self.status.setText(f"正在后台物化 {len(constraints)} 个确认关联…")
+            return
         result = AssociationMaterializer().materialize(self.project, constraints)
+        self._show_materialize_result(result, len(constraints))
+
+    def _poll_materialize(self) -> None:
+        handle = self._materialize_handle
+        if handle is None:
+            self._materialize_timer.stop()
+            return
+        try:
+            task_result = handle.wait(0)
+        except TimeoutError:
+            return
+        self._materialize_timer.stop()
+        self._materialize_handle = None
+        if self.project is None:
+            return
+        project_id = str(self.project.manifest.get("project_id", ""))
+        generation = self.controller.generation if self.controller is not None else -1
+        if task_result.project_id != project_id or task_result.generation != generation:
+            return
+        if task_result.status == "cancelled":
+            self.status.setText("关联物化已取消，原结果保持不变")
+        elif task_result.status != "succeeded" or not isinstance(task_result.value, MaterializeResult):
+            self.status.setText(f"物化失败：{task_result.error or task_result.status}")
+        else:
+            self._show_materialize_result(task_result.value, self._materialize_constraint_count)
+        self._materialize_constraint_count = 0
+        self.materialize_button.setEnabled(self.report is not None and not self.report.has_blocking_issues)
+
+    def _show_materialize_result(self, result: MaterializeResult, constraint_count: int) -> None:
         self.status.setText(
-            f"已物化 {len(constraints)} 个确认关联"
+            f"已物化 {constraint_count} 个确认关联"
             if result.succeeded
             else f"物化失败：{result.error}"
         )
@@ -263,6 +351,9 @@ class AssociationPage(QWidget):
 
     def closeEvent(self, event) -> None:
         self._generation += 1
+        if self._materialize_handle is not None:
+            self._materialize_handle.cancel()
+        self._materialize_timer.stop()
         if self._thread is not None and self._thread.isRunning():
             self._thread.quit()
             self._thread.wait(2000)

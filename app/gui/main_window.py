@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
                 if page_id == "quality_2d"
                 else CorrectionPage(provider=self.frame_provider, controller=self.controller)
                 if page_id == "correction_2d"
-                else AssociationPage()
+                else AssociationPage(controller=self.controller)
                 if page_id == "association"
                 else AnalysisPage()
                 if page_id == "analysis"
