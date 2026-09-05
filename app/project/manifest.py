@@ -35,6 +35,7 @@ PROJECT_DIRECTORIES: tuple[str, ...] = (
     "synchronization",
     "kinematics",
     "reports",
+    "reports/import",
     "reports/quality",
     "reports/quality/history",
     "reports/metrics",
