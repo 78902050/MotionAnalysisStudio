@@ -6,7 +6,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtWidgets import QApplication, QLabel, QScrollArea
 
 from app.analysis.model import MetricTable
 from app.gui.main_window import MainWindow
@@ -39,6 +39,9 @@ class EventsPageTests(unittest.TestCase):
         self.assertIsNotNone(page.findChild(object, "events_cycle_table"))
 
         page.set_metric_table(self._metrics())
+        unit = page.findChild(QLabel, "events_metric_unit")
+        self.assertIsNotNone(unit)
+        self.assertEqual(unit.text(), "m/s")
         page.detect()
         deadline = time.monotonic() + 2.0
         while page.events_table.rowCount() == 0 and time.monotonic() < deadline:

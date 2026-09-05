@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from .contracts import MetricSeriesContract
+
 
 Point3D = tuple[float, float, float]
 PointSeries = tuple[Point3D, ...]
@@ -124,13 +126,17 @@ class Trajectory:
 
         data_rate: float | None = None
         units: str | None = None
+        declared_frames: int | None = None
+        declared_markers: int | None = None
         for line in lines[:4]:
             fields = line.split("\t")
             if len(fields) >= 5 and fields[0].strip().replace(".", "", 1).isdigit():
                 try:
                     data_rate = float(fields[0].strip())
-                except ValueError:
-                    pass
+                    declared_frames = int(fields[2].strip())
+                    declared_markers = int(fields[3].strip())
+                except (IndexError, ValueError) as exc:
+                    raise ValueError(f"TRC header counts are invalid: {path}") from exc
                 units = fields[4].strip() or None
                 break
         if data_rate is None or units is None:
@@ -151,19 +157,28 @@ class Trajectory:
                 labels.append(label)
         if not labels:
             raise ValueError(f"TRC contains no marker labels: {path}")
+        if declared_markers is not None and len(labels) != declared_markers:
+            raise ValueError(
+                f"TRC declares {declared_markers} markers but header contains {len(labels)}: {path}"
+            )
 
         frames: list[int] = []
         times: list[float] = []
         values: dict[str, list[Point3D]] = {label: [] for label in labels}
-        for line in lines[header_index + 2 :]:
+        for line_number, line in enumerate(lines[header_index + 2 :], start=header_index + 3):
             if not line.strip():
                 continue
             fields = line.split("\t")
+            required_fields = 2 + len(labels) * 3
+            if len(fields) < required_fields:
+                raise ValueError(
+                    f"TRC data row has {len(fields)} fields, expected at least {required_fields}, line {line_number}: {path}"
+                )
             try:
                 frame = int(fields[0].strip())
                 time = float(fields[1].strip())
-            except (IndexError, ValueError):
-                continue
+            except (IndexError, ValueError) as exc:
+                raise ValueError(f"TRC frame/time is invalid at line {line_number}: {path}") from exc
             frames.append(frame)
             times.append(time)
             for marker_index, label in enumerate(labels):
@@ -173,11 +188,17 @@ class Trajectory:
                     try:
                         raw = fields[start + offset].strip()
                         coords.append(float(raw) if raw else float("nan"))
-                    except (IndexError, ValueError):
-                        coords.append(float("nan"))
+                    except (IndexError, ValueError) as exc:
+                        raise ValueError(
+                            f"TRC coordinate is invalid for {label} at line {line_number}: {path}"
+                        ) from exc
                 values[label].append(tuple(coords))  # type: ignore[arg-type]
         if not frames:
             raise ValueError(f"TRC contains no data rows: {path}")
+        if declared_frames is not None and len(frames) != declared_frames:
+            raise ValueError(
+                f"TRC declares {declared_frames} frames but contains {len(frames)} data rows: {path}"
+            )
         return cls(
             tuple(frames),
             tuple(times),
@@ -198,6 +219,7 @@ class MetricTable:
     units: Mapping[str, str]
     metadata: Mapping[str, object]
     provenance: Mapping[str, Mapping[str, object]]
+    contracts: Mapping[str, MetricSeriesContract] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         frames = tuple(self.frames)
@@ -214,18 +236,44 @@ class MetricTable:
             raise ValueError("metric columns and units must have the same keys")
         if set(columns) != set(self.provenance):
             raise ValueError("metric columns and provenance must have the same keys")
+        contracts = dict(self.contracts)
+        if contracts and set(columns) != set(contracts):
+            raise ValueError("metric columns and contracts must have the same keys")
+        if not contracts:
+            coordinate_unit = str(self.metadata.get("coordinate_unit", "unknown"))
+            coordinate_system = str(self.metadata.get("coordinate_system", "unknown"))
+            contracts = {
+                name: MetricSeriesContract(
+                    "legacy",
+                    str(self.units[name]),
+                    coordinate_unit,
+                    coordinate_system,
+                    "legacy",
+                    legacy=True,
+                )
+                for name in columns
+            }
+        if any(not isinstance(contract, MetricSeriesContract) for contract in contracts.values()):
+            raise TypeError("metric contracts must contain MetricSeriesContract values")
         object.__setattr__(self, "frames", frames)
         object.__setattr__(self, "times", times)
         object.__setattr__(self, "columns", columns)
         object.__setattr__(self, "units", dict(self.units))
         object.__setattr__(self, "metadata", dict(self.metadata))
         object.__setattr__(self, "provenance", {key: dict(value) for key, value in self.provenance.items()})
+        object.__setattr__(self, "contracts", contracts)
 
     def column(self, name: str) -> tuple[float, ...]:
         try:
             return self.columns[name]
         except KeyError as exc:
             raise KeyError(f"unknown metric column: {name}") from exc
+
+    def contract(self, name: str) -> MetricSeriesContract:
+        try:
+            return self.contracts[name]
+        except KeyError as exc:
+            raise KeyError(f"unknown metric contract: {name}") from exc
 
     def to_dict(self) -> dict[str, object]:
         def json_value(value: object) -> object:
@@ -244,4 +292,5 @@ class MetricTable:
             "units": dict(self.units),
             "metadata": json_value(dict(self.metadata)),
             "provenance": json_value({name: dict(value) for name, value in self.provenance.items()}),
+            "contracts": {name: contract.to_dict() for name, contract in self.contracts.items()},
         }

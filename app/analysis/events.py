@@ -49,6 +49,7 @@ class Event:
     segment_id: str
     source: str = "detected"
     note: str = ""
+    detector_version: str = "event-detector-v1"
 
     def __post_init__(self) -> None:
         if not self.event_id.strip() or not self.rule_id.strip():
@@ -63,6 +64,8 @@ class Event:
             raise ValueError(f"unsupported event role: {self.role}")
         if not self.source.strip():
             raise ValueError("event source must not be empty")
+        if not self.detector_version.strip():
+            raise ValueError("event detector_version must not be empty")
         object.__setattr__(self, "time", float(self.time))
         object.__setattr__(self, "value", float(self.value))
 
@@ -77,6 +80,7 @@ class Event:
             "segment_id": self.segment_id,
             "source": self.source,
             "note": self.note,
+            "detector_version": self.detector_version,
         }
 
     @classmethod
@@ -91,11 +95,17 @@ class Event:
             str(value["segment_id"]),
             str(value.get("source", "detected")),
             str(value.get("note", "")),
+            str(value.get("detector_version", "event-detector-v1")),
         )
 
 
 class EventDetector:
     """Detect threshold-entry events without crossing missing data."""
+
+    def __init__(self, version: str = "event-detector-v1") -> None:
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError("event detector version must not be empty")
+        self.version = version
 
     def detect(self, metrics: MetricTable, rule: EventRule) -> tuple[Event, ...]:
         values = metrics.column(rule.column)
@@ -114,6 +124,7 @@ class EventDetector:
                 index += 1
             end = index
             segment_id = f"segment-{metrics.frames[start]}"
+            occurrence = 0
             for current in range(start + 1, end + 1):
                 previous_value = values[current - 1]
                 current_value = values[current]
@@ -121,15 +132,17 @@ class EventDetector:
                     frame = metrics.frames[current]
                     events.append(
                         Event(
-                            f"event-{rule.rule_id}-{frame}",
+                            f"event-{rule.rule_id}-{segment_id}-{occurrence}",
                             rule.rule_id,
                             rule.role,
                             frame,
                             metrics.times[current],
                             current_value,
                             segment_id,
+                            detector_version=self.version,
                         )
                     )
+                    occurrence += 1
             index += 1
         return tuple(events)
 

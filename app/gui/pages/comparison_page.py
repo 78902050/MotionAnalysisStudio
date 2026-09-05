@@ -121,9 +121,9 @@ class ComparisonPage(QWidget):
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
 
-        self.comparison_table = QTableWidget(0, 8)
+        self.comparison_table = QTableWidget(0, 9)
         self.comparison_table.setObjectName("comparison_table")
-        self.comparison_table.setHorizontalHeaderLabels(["对齐键", "成员", "指标", "帧", "时间", "值", "缺失原因", "事件"])
+        self.comparison_table.setHorizontalHeaderLabels(["对齐键", "成员", "指标", "单位", "帧", "时间", "值", "缺失原因", "事件"])
         self.comparison_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.comparison_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.comparison_table, 1)
@@ -249,6 +249,7 @@ class ComparisonPage(QWidget):
                 values["alignment_key"],
                 values["member_id"],
                 values["metric"],
+                values["unit"],
                 values["frame"],
                 values["time"],
                 values["value"],

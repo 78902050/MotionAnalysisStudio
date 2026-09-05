@@ -38,6 +38,7 @@ class EventHistory:
                 event.segment_id,
                 "manual",
                 event.note,
+                event.detector_version,
             )
         self._append("manual", event)
 
@@ -74,5 +75,12 @@ class EventHistory:
     def effective_events(self, detected: tuple[Event, ...] | list[Event]) -> tuple[Event, ...]:
         latest: dict[str, Event] = {}
         for record in self.records():
-            latest[record.event.event_id] = record.event
-        return tuple(latest.get(event.event_id, event) for event in detected)
+            if record.action == "manual":
+                latest[record.event.event_id] = record.event
+        effective = [latest.pop(event.event_id, event) for event in detected]
+        effective.extend(
+            event
+            for event in latest.values()
+            if event.source == "manual"
+        )
+        return tuple(sorted(effective, key=lambda event: (event.frame, event.time, event.event_id)))

@@ -171,7 +171,15 @@ class AnalysisPage(QWidget):
             self.status.setText("请先提供轨迹")
             return
         self.coordinate_unit.setCurrentText(trajectory.coordinate_unit)
-        self.sampling_rate.setValue(float(trajectory.metadata.get("sampling_rate_hz", 60.0)))
+        sampling_rate = trajectory.metadata.get("sampling_rate_hz")
+        if not isinstance(sampling_rate, (int, float)) or isinstance(sampling_rate, bool):
+            if len(trajectory.frames) >= 2:
+                frame_span = trajectory.frames[-1] - trajectory.frames[0]
+                time_span = trajectory.times[-1] - trajectory.times[0]
+                sampling_rate = frame_span / time_span if frame_span > 0 and time_span > 0 else 60.0
+            else:
+                sampling_rate = 60.0
+        self.sampling_rate.setValue(float(sampling_rate))
         self.input_value.setText(trajectory.source_path or "内存轨迹")
         self.coordinate_value.setText(f"{trajectory.coordinate_system} / {trajectory.coordinate_unit}")
         self.status.setText("轨迹已就绪；点击“后台计算”开始")

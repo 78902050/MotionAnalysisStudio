@@ -95,6 +95,10 @@ class EventsPage(QWidget):
         self.metric_selector.setObjectName("events_metric_selector")
         self.metric_selector.currentTextChanged.connect(self._metric_changed)
         controls.addWidget(self.metric_selector, 2)
+        controls.addWidget(QLabel("单位"))
+        self.metric_unit = QLabel("—")
+        self.metric_unit.setObjectName("events_metric_unit")
+        controls.addWidget(self.metric_unit)
         controls.addWidget(QLabel("条件"))
         self.operator_selector = QComboBox()
         self.operator_selector.addItem("上穿", "crosses_above")
@@ -176,6 +180,7 @@ class EventsPage(QWidget):
         self._events = ()
         self._cycles = ()
         self.metric_selector.clear()
+        self.metric_unit.setText("—")
         self.events_table.setRowCount(0)
         self.cycle_table.setRowCount(0)
         self.status.setText("已打开项目；请先在运动学页计算并传入指标" if project else "请先打开项目")
@@ -190,9 +195,11 @@ class EventsPage(QWidget):
         self.cycle_table.setRowCount(0)
         self.metric_selector.clear()
         if table is None:
+            self.metric_unit.setText("—")
             self.status.setText("请先计算运动学指标")
             return
         self.metric_selector.addItems(list(table.columns))
+        self._metric_changed(self.metric_selector.currentText())
         self._update_frame_range()
         self.status.setText(f"指标已就绪：{len(table.columns)} 列，{len(table.frames)} 帧")
 
@@ -341,7 +348,10 @@ class EventsPage(QWidget):
         self._fill_cycle_table()
         self.status.setText(f"已追加人工调整：{manual.event_id}，帧 {manual.frame}")
 
-    def _metric_changed(self, _name: str) -> None:
+    def _metric_changed(self, name: str) -> None:
+        self.metric_unit.setText(
+            self.metric_table.units.get(name, "—") if self.metric_table is not None else "—"
+        )
         self._update_frame_range()
 
     def _update_frame_range(self) -> None:

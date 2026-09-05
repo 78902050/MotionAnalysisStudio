@@ -32,7 +32,7 @@ def export_report(report, path: Path, format: str) -> None:
 def _csv_text(report) -> str:
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\n")
-    fields = ("alignment_key", "member_id", "project_id", "person_id", "trial_id", "metric", "frame", "time", "value", "missing_reason", "event_id")
+    fields = ("alignment_key", "member_id", "project_id", "person_id", "trial_id", "metric", "unit", "frame", "time", "value", "missing_reason", "event_id")
     writer.writerow(fields)
     for row in report.rows:
         data = row.to_dict()
@@ -41,7 +41,7 @@ def _csv_text(report) -> str:
 
 
 def _html_text(report) -> str:
-    headers = ("alignment_key", "member_id", "metric", "frame", "time", "value", "missing_reason", "event_id")
+    headers = ("alignment_key", "member_id", "metric", "unit", "frame", "time", "value", "missing_reason", "event_id")
     rows = []
     for row in report.rows:
         data = row.to_dict()

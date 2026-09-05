@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -108,6 +110,7 @@ class ComparisonRow:
     value: float | None
     missing_reason: str | None = None
     event_id: str | None = None
+    unit: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -122,6 +125,7 @@ class ComparisonRow:
             "value": self.value,
             "missing_reason": self.missing_reason,
             "event_id": self.event_id,
+            "unit": self.unit,
         }
 
 
@@ -180,6 +184,7 @@ class ComparisonService:
         columns = tuple(sorted({column for member in selected for column in member.metrics.columns}))
         if not columns:
             raise ValueError("selected comparison members have no metric columns")
+        self._validate_compatibility(selected, columns, request.alignment)
         if request.alignment == "frame":
             rows = self._rows_by_frame(selected, columns)
             alignment_source = "exact metric frames; no interpolation"
@@ -196,10 +201,18 @@ class ComparisonService:
             "metric_columns": columns,
             "member_count": len(selected),
             "input_versions": {member.member_id: member.input_version for member in selected},
+            "metric_contracts": {
+                column: next(
+                    member.metrics.contract(column).to_dict()
+                    for member in selected
+                    if column in member.metrics.columns
+                )
+                for column in columns
+            },
             "missing_value_policy": "missing values remain null with missing_reason; never zero-filled",
         }
         summary = self._summary(rows, member_ids, columns)
-        report_id = self._report_id(request, member_ids)
+        report_id = self._report_id(request, selected, columns)
         from app.reporting.report_builder import ReportBuilder
 
         return ReportBuilder().build(report_id, request, member_ids, rows, metadata, summary)
@@ -210,10 +223,62 @@ class ComparisonService:
         ReportExporter().export(report, path, format)
 
     @staticmethod
-    def _report_id(request: ComparisonRequest, member_ids: tuple[str, ...]) -> str:
+    def _report_id(
+        request: ComparisonRequest,
+        members: list[ComparisonMember],
+        columns: tuple[str, ...],
+    ) -> str:
+        member_ids = tuple(member.member_id for member in members)
         raw = "-".join((request.alignment, *member_ids))
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-")
-        return f"comparison-v1-{slug or request.alignment}"
+        identity = {
+            "request": request.to_dict(),
+            "members": [
+                {
+                    "member_id": member.member_id,
+                    "input_version": member.input_version,
+                    "contracts": {
+                        column: member.metrics.contract(column).to_dict()
+                        for column in columns
+                        if column in member.metrics.columns
+                    },
+                }
+                for member in members
+            ],
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:12]
+        return f"comparison-v1-{slug or request.alignment}-{digest}"
+
+    @staticmethod
+    def _validate_compatibility(
+        members: list[ComparisonMember],
+        columns: tuple[str, ...],
+        alignment: Alignment,
+    ) -> None:
+        for column in columns:
+            contracts = [
+                (member.member_id, member.metrics.contract(column))
+                for member in members
+                if column in member.metrics.columns
+            ]
+            if len(contracts) < 2:
+                continue
+            baseline_id, baseline = contracts[0]
+            for member_id, contract in contracts[1:]:
+                if not baseline.compatible_with(contract):
+                    raise ValueError(
+                        f"incompatible metric contract for {column}: {baseline_id} vs {member_id}"
+                    )
+        if alignment == "event":
+            versions = {
+                event.detector_version
+                for member in members
+                for event in member.events
+            }
+            if len(versions) > 1:
+                raise ValueError("incompatible event detector versions for event alignment")
 
     @classmethod
     def _rows_by_frame(cls, members: list[ComparisonMember], columns: tuple[str, ...]) -> tuple[ComparisonRow, ...]:
@@ -266,14 +331,14 @@ class ComparisonService:
         index_by_frame = {value: index for index, value in enumerate(member.metrics.frames)}
         index = index_by_frame.get(frame)
         if index is None:
-            return ComparisonRow(frame.__str__(), member.member_id, member.project_id, member.person_id, member.trial_id, column, frame, None, None, "sample_missing")
+            return ComparisonRow(frame.__str__(), member.member_id, member.project_id, member.person_id, member.trial_id, column, frame, None, None, "sample_missing", unit=member.metrics.units.get(column))
         return ComparisonService._row_from_index(member, column, str(frame), index)
 
     @staticmethod
     def _row_for_time(member: ComparisonMember, column: str, time: float) -> ComparisonRow:
         index = next((index for index, candidate in enumerate(member.metrics.times) if candidate == time), None)
         if index is None:
-            return ComparisonRow(f"{time:g}", member.member_id, member.project_id, member.person_id, member.trial_id, column, None, time, None, "sample_missing")
+            return ComparisonRow(f"{time:g}", member.member_id, member.project_id, member.person_id, member.trial_id, column, None, time, None, "sample_missing", unit=member.metrics.units.get(column))
         return ComparisonService._row_from_index(member, column, f"{time:g}", index)
 
     @staticmethod
@@ -284,18 +349,18 @@ class ComparisonService:
             return ComparisonRow(alignment_key, member.member_id, member.project_id, member.person_id, member.trial_id, column, frame, time, None, "metric_missing")
         value = member.metrics.columns[column][index]
         if not math.isfinite(value):
-            return ComparisonRow(alignment_key, member.member_id, member.project_id, member.person_id, member.trial_id, column, frame, time, None, "missing_value")
-        return ComparisonRow(alignment_key, member.member_id, member.project_id, member.person_id, member.trial_id, column, frame, time, value)
+            return ComparisonRow(alignment_key, member.member_id, member.project_id, member.person_id, member.trial_id, column, frame, time, None, "missing_value", unit=member.metrics.units[column])
+        return ComparisonRow(alignment_key, member.member_id, member.project_id, member.person_id, member.trial_id, column, frame, time, value, unit=member.metrics.units[column])
 
     @staticmethod
     def _row_for_event(member: ComparisonMember, column: str, alignment_key: str, event: Event | None) -> ComparisonRow:
         if event is None:
-            return ComparisonRow(alignment_key, member.member_id, member.project_id, member.person_id, member.trial_id, column, None, None, None, "event_missing")
+            return ComparisonRow(alignment_key, member.member_id, member.project_id, member.person_id, member.trial_id, column, None, None, None, "event_missing", unit=member.metrics.units.get(column))
         index = next((index for index, frame in enumerate(member.metrics.frames) if frame == event.frame), None)
         if index is None:
-            return ComparisonRow(alignment_key, member.member_id, member.project_id, member.person_id, member.trial_id, column, event.frame, event.time, None, "event_frame_missing", event.event_id)
+            return ComparisonRow(alignment_key, member.member_id, member.project_id, member.person_id, member.trial_id, column, event.frame, event.time, None, "event_frame_missing", event.event_id, member.metrics.units.get(column))
         row = ComparisonService._row_from_index(member, column, alignment_key, index)
-        return ComparisonRow(row.alignment_key, row.member_id, row.project_id, row.person_id, row.trial_id, row.metric, row.frame, row.time, row.value, row.missing_reason, event.event_id)
+        return ComparisonRow(row.alignment_key, row.member_id, row.project_id, row.person_id, row.trial_id, row.metric, row.frame, row.time, row.value, row.missing_reason, event.event_id, row.unit)
 
     @staticmethod
     def _summary(rows: tuple[ComparisonRow, ...], member_ids: tuple[str, ...], columns: tuple[str, ...]) -> dict[str, object]:
