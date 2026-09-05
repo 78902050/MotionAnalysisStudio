@@ -28,6 +28,15 @@ class PackagingDiagnosticsTests(unittest.TestCase):
             self.fail(f"--gui-smoke-test is not implemented: {exc}")
         self.assertEqual(result, 0)
 
+    def test_workflow_smoke_includes_existing_results_and_pipeline_interfaces(self) -> None:
+        from app.diagnostics.bundle import run_workflow_smoke
+
+        result = run_workflow_smoke()
+
+        self.assertTrue(result.ok, result.message)
+        self.assertIn("existing results", result.checks)
+        self.assertIn("pipeline interface", result.checks)
+
     def test_dll_audit_rejects_poppler_icu_selected_for_bundle(self) -> None:
         completed = self._run_dll_audit(
             "('icuuc.dll', 'C:\\\\tools\\\\poppler\\\\Library\\\\bin\\\\icuuc.dll', 'BINARY')"

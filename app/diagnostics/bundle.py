@@ -78,10 +78,16 @@ def run_workflow_smoke() -> GuiSmokeResult:
     checks: list[str] = []
     try:
         from app.application.quality_correction_service import QualityCorrectionService
+        from app.application.pipeline_launcher import build_pipeline_commands
         from app.correction.history import CorrectionHistory
         from app.domain.addresses import FrameAddress, KeypointAddress, PersonAddress
         from app.domain.issues import QualityIssue
+        from app.pipeline.dependency_graph import GENERAL_POSE2SIM_STAGES
+        from app.pose2sim.config_document import ConfigDocument
+        from app.project.discovery import ExistingResultDiscovery
+        from app.project.importer import ExistingResultImporter
         from app.project.manager import ProjectManager
+        from app.quality.audit import QualityAuditService
         from app.quality.model import QualityReport
         from app.quality.report_store import QualityReportStore
 
@@ -172,6 +178,47 @@ def run_workflow_smoke() -> GuiSmokeResult:
             if history.restore_file(pose_path, "workflow smoke restore") != 1:
                 raise RuntimeError("pose restore did not produce one audit operation")
             checks.append("backup restore")
+
+            existing_root = Path(directory) / "existing-results"
+            nested_pose = existing_root / "pose" / "cam01_json" / "cam01_000000.json"
+            nested_pose.parent.mkdir(parents=True)
+            nested_pose.write_text(
+                json.dumps(
+                    {
+                        "version": 1.3,
+                        "people": [
+                            {
+                                "person_id": [-1],
+                                "pose_keypoints_2d": [10.0, 20.0, 0.9],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config_path = existing_root / "config" / "Config.toml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text('[project]\nname = "smoke"\n', encoding="utf-8")
+            candidate = ExistingResultDiscovery().discover_one(existing_root)
+            existing_project = ExistingResultImporter().register(candidate)
+            if candidate.has_video or any(
+                "video_path" in camera for camera in existing_project.manifest["cameras"]
+            ):
+                raise RuntimeError("data-only project unexpectedly requires video")
+            quality = QualityAuditService().analyze(existing_project)
+            if quality.metrics()["2d_detection_people_count"] != 1:
+                raise RuntimeError("nested Pose2Sim detection was not audited")
+            checks.append("existing results")
+
+            config = ConfigDocument.open(existing_project.path_for("config"))
+            if not config.validate(config.text).valid:
+                raise RuntimeError("valid Pose2Sim config was rejected")
+            commands = build_pipeline_commands(
+                existing_project.path_for("config"), GENERAL_POSE2SIM_STAGES
+            )
+            if tuple(commands) != GENERAL_POSE2SIM_STAGES:
+                raise RuntimeError("general Pose2Sim stage commands are incomplete")
+            checks.append("pipeline interface")
     except Exception as exc:
         return GuiSmokeResult(
             False,

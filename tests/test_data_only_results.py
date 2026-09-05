@@ -45,12 +45,14 @@ class DataOnlyResultTests(unittest.TestCase):
         canvas = CorrectionCanvas()
         canvas.resize(640, 360)
 
+        canvas.set_data_extent(3840, 2160)
         canvas.set_pose_points({"left_wrist": (1986.0, 1017.0, 0.9)})
         canvas.set_selected_point(1986.0, 1017.0)
 
         self.assertFalse(canvas.has_frame)
         self.assertTrue(canvas.has_coordinate_space)
         self.assertFalse(canvas._image_rect().isEmpty())
+        self.assertEqual(canvas.data_extent, (3840, 2160))
 
     def test_imported_result_without_report_starts_background_quality_scan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

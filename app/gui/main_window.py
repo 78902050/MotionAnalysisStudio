@@ -354,8 +354,10 @@ class MainWindow(QMainWindow):
         )
         self.stage_label.setText(f"阶段：{active_stage}")
         calibration_page = self._pages.get("calibration")
+        camera_extents: dict[str, tuple[int, int]] = {}
         if isinstance(calibration_page, CalibrationPage):
             calibration_page.set_project(project)
+            camera_extents = calibration_page.camera_extents
         media_page = self._pages.get("media")
         if isinstance(media_page, MediaPage):
             media_page.set_project(project)
@@ -365,6 +367,7 @@ class MainWindow(QMainWindow):
         correction_page = self._pages.get("correction_2d")
         if isinstance(correction_page, CorrectionPage):
             correction_page.clear_project_context()
+            correction_page.set_camera_extents(camera_extents)
             correction_page.set_timeline_range(
                 *self.quality_correction_service.timeline_bounds()
             )

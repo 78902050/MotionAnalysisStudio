@@ -8,16 +8,23 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QPushButton
 
+from app.application.controller import ApplicationController
 from app.gui.pages.calibration_page import CalibrationPage
 from app.project.manager import ProjectManager
 
 
 class _Handle:
+    log_path = Path("caliscope.log")
+
     def poll(self):
         return None
 
     def cancel(self):
         return None
+
+    def wait(self, timeout=None):
+        del timeout
+        return 0
 
     def close(self):
         self.cancel()
@@ -61,6 +68,22 @@ class CaliscopePageLaunchTests(unittest.TestCase):
             self.assertFalse(page.launch_caliscope())
             self.assertEqual(len(launcher.calls), 1)
             self.assertIn("正在运行", page.caliscope_status.text())
+            page.close()
+
+    def test_caliscope_process_is_visible_to_task_supervisor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = ProjectManager.create(root / "试次", "任务标定")
+            controller = ApplicationController()
+            self.assertTrue(controller.open_project(project))
+            launcher = _Launcher()
+            page = CalibrationPage(project, controller=controller, launcher=launcher)
+
+            self.assertTrue(page.launch_caliscope())
+            snapshots = controller.supervisor.snapshots()
+
+            self.assertTrue(any(item.name == "caliscope-gui" for item in snapshots))
+            self.assertTrue(controller.shutdown(dirty_decision="discard"))
             page.close()
 
 

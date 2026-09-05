@@ -46,6 +46,7 @@ class CorrectionCanvas(QWidget):
         self._points: dict[str, tuple[float, float, float]] = {}
         self._data_width = 0.0
         self._data_height = 0.0
+        self._explicit_extent = False
         self._zoom = 1.0
         self._dragging_point = False
         self.setMinimumSize(120, 100)
@@ -59,6 +60,21 @@ class CorrectionCanvas(QWidget):
     def has_coordinate_space(self) -> bool:
         width, height = self._space_size()
         return width > 0 and height > 0
+
+    @property
+    def data_extent(self) -> tuple[int, int]:
+        width, height = self._space_size()
+        return round(width), round(height)
+
+    def set_data_extent(self, width: int | float, height: int | float) -> None:
+        width = float(width)
+        height = float(height)
+        if not math.isfinite(width) or not math.isfinite(height) or width <= 0 or height <= 0:
+            raise ValueError("姿态坐标空间尺寸必须是正有限数")
+        self._data_width = width
+        self._data_height = height
+        self._explicit_extent = True
+        self.update()
 
     @property
     def point_count(self) -> int:
@@ -91,7 +107,7 @@ class CorrectionCanvas(QWidget):
 
     def set_pose_points(self, points: dict[str, tuple[float, float, float]]) -> None:
         self._points = dict(points)
-        if self._image.isNull() and points:
+        if self._image.isNull() and points and not self._explicit_extent:
             finite_points = [
                 (float(x), float(y))
                 for x, y, _confidence in points.values()
@@ -113,6 +129,7 @@ class CorrectionCanvas(QWidget):
         self._points.clear()
         self._data_width = 0.0
         self._data_height = 0.0
+        self._explicit_extent = False
         self._zoom = 1.0
         self._dragging_point = False
         self.update()
@@ -230,6 +247,7 @@ class CorrectionPage(QWidget):
         self._canvases: list[CorrectionCanvas] = []
         self._expected_frames: dict[str, int] = {}
         self._camera_names: list[str] = []
+        self._camera_extents: dict[str, tuple[int, int]] = {}
         self._view_addresses: dict[str, FrameAddress] = {}
         self._view_failures: dict[str, str] = {}
         self._build_ui()
@@ -517,6 +535,14 @@ class CorrectionPage(QWidget):
             return
         self._select_camera(self.camera_selector.currentText(), persist=False)
 
+    def set_camera_extents(self, extents: dict[str, tuple[int, int]]) -> None:
+        self._camera_extents = dict(extents)
+        for index, card in enumerate(self._view_cards):
+            camera = str(card.property("camera") or "")
+            extent = self._camera_extents.get(camera)
+            if extent is not None:
+                self._canvases[index].set_data_extent(*extent)
+
     def _select_camera(self, camera: str, *, persist: bool = True) -> None:
         if camera not in self._camera_names:
             return
@@ -530,6 +556,9 @@ class CorrectionPage(QWidget):
                 f"{bound_camera or f'视图 {index + 1}'} · 等待原视频帧"
             )
             self._canvases[index].clear()
+            extent = self._camera_extents.get(bound_camera)
+            if extent is not None:
+                self._canvases[index].set_data_extent(*extent)
         if self._view_addresses or self._view_failures:
             self._request_visible_frames()
 

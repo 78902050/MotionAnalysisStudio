@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from time import sleep
 
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -27,7 +28,7 @@ from app.calibration.importer import CalibrationImporter
 from app.calibration.model import CalibrationCameraReport, CalibrationPreview
 from app.application.controller import ApplicationController
 from app.project.manager import ProjectManager
-from app.tasks.base import TaskRequest
+from app.tasks.base import TaskCancelled, TaskRequest
 from app.tasks.handle import TaskHandle
 from app.external_tools.caliscope_settings import CaliscopeSettingsDiagnostic
 from app.external_tools.launcher import ExternalProcessHandle, ExternalToolLaunchError, ExternalToolLauncher
@@ -58,6 +59,7 @@ class CalibrationPage(QWidget):
         self._preview_timer.setInterval(25)
         self._preview_timer.timeout.connect(self._poll_preview)
         self._caliscope_handle: ExternalProcessHandle | None = None
+        self._caliscope_task_handle: TaskHandle | None = None
         self._caliscope_timer = QTimer(self)
         self._caliscope_timer.setInterval(500)
         self._caliscope_timer.timeout.connect(self._poll_caliscope)
@@ -221,6 +223,13 @@ class CalibrationPage(QWidget):
         self.camera_selector.blockSignals(False)
         self._show_camera_parameters(self.camera_selector.currentText())
 
+    @property
+    def camera_extents(self) -> dict[str, tuple[int, int]]:
+        return {
+            camera_id: report.image_size
+            for camera_id, report in self._camera_reports.items()
+        }
+
     def _show_camera_parameters(self, camera_id: str) -> None:
         report = self._camera_reports.get(camera_id)
         if report is None:
@@ -285,6 +294,28 @@ class CalibrationPage(QWidget):
         self._caliscope_handle = handle
         if self.controller is not None:
             self.controller.register_resource(handle)
+            if self.project is not None and self.controller.current_project is self.project:
+                request = TaskRequest(
+                    str(self.project.manifest["project_id"]),
+                    self.controller.generation,
+                    "caliscope-gui",
+                    {"workspace": str(workspace), "log_path": str(log_path)},
+                )
+
+                def work(token):
+                    while handle.poll() is None:
+                        if token.is_cancelled:
+                            handle.cancel()
+                            raise TaskCancelled()
+                        sleep(0.05)
+                    return_code = handle.wait(1)
+                    if return_code != 0:
+                        raise RuntimeError(
+                            f"Caliscope 退出代码 {return_code}；日志：{log_path}"
+                        )
+                    return {"exit_code": return_code, "log_path": str(log_path)}
+
+                self._caliscope_task_handle = self.controller.start_task(request, work)
         self._caliscope_timer.start()
         self.caliscope_status.setText(f"已启动；日志：{log_path}")
         return True

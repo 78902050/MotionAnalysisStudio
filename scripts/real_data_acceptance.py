@@ -17,11 +17,19 @@ from app.adapters.pose2sim.pose2d_repository import Pose2DRepository
 from app.analysis.metrics import MetricEngine
 from app.analysis.model import MetricConfig, MetricDefinition, Trajectory
 from app.calibration.importer import CalibrationImporter
+from app.application.pipeline_launcher import build_pipeline_commands
 from app.correction.history import CorrectionHistory
 from app.correction.rerun import CORRECTION_RERUN_STAGES
 from app.correction.session import CorrectionSession
 from app.domain.addresses import CorrectionTarget, FrameAddress, KeypointAddress, PersonAddress
+from app.external_tools.caliscope_settings import CaliscopeSettingsDiagnostic
+from app.external_tools.model import build_caliscope_command
+from app.pipeline.dependency_graph import GENERAL_POSE2SIM_STAGES
+from app.pose2sim.config_document import ConfigDocument
+from app.project.discovery import ExistingResultDiscovery
+from app.project.importer import ExistingResultImporter
 from app.project.manager import ProjectManager
+from app.quality.audit import QualityAuditService
 
 
 def _first_valid_calibration(root: Path, importer: CalibrationImporter) -> Path:
@@ -74,6 +82,68 @@ def _first_valid_pose(root: Path) -> tuple[Path, str, int, int]:
                 failures.append(f"{path}: {exc}")
     detail = f"; first failure: {failures[0]}" if failures else ""
     raise FileNotFoundError(f"no readable Pose2Sim frame JSON found under {root}{detail}")
+
+
+def _verify_existing_results_trial(
+    source_root: Path,
+    output_root: Path,
+    calibration_source: Path,
+    fallback_trc: Path,
+) -> dict[str, object]:
+    discovery = ExistingResultDiscovery()
+    candidates = discovery.scan(source_root)
+    source_candidate = next(
+        (candidate for candidate in candidates if candidate.artifacts.pose_2d),
+        None,
+    )
+    if source_candidate is None:
+        raise FileNotFoundError(f"no processed Pose2Sim trial found under {source_root}")
+    pose_source, camera, _frame, _keypoint_count = _first_valid_pose(source_candidate.root)
+    trc_source = source_candidate.artifacts.trc[0] if source_candidate.artifacts.trc else fallback_trc
+
+    trial = output_root / "registered-trial"
+    pose_target = trial / "pose" / f"{camera}_json" / pose_source.name
+    pose_target.parent.mkdir(parents=True, exist_ok=True)
+    (trial / "pose-3d").mkdir(parents=True, exist_ok=True)
+    (trial / "config").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(pose_source, pose_target)
+    shutil.copy2(trc_source, trial / "pose-3d" / trc_source.name)
+    shutil.copy2(calibration_source, trial / "camera_array.toml")
+    (trial / "config" / "Config.toml").write_text(
+        '[project]\nname = "existing-results-acceptance"\n',
+        encoding="utf-8",
+    )
+
+    copied_candidate = discovery.discover_one(trial)
+    project = ExistingResultImporter().register(copied_candidate)
+    quality = QualityAuditService()
+    report = quality.analyze(project)
+    quality.save(report)
+    config = ConfigDocument.open(project.path_for("config"))
+    config_validation = config.validate(config.text)
+    commands = build_pipeline_commands(project.path_for("config"), GENERAL_POSE2SIM_STAGES)
+    settings_inspection = CaliscopeSettingsDiagnostic.inspect(
+        CaliscopeSettingsDiagnostic.default_path()
+    )
+    return {
+        "discovered_trial_count": len(candidates),
+        "source_trial": str(source_candidate.root),
+        "registered_root": str(project.root),
+        "cameras": list(copied_candidate.cameras),
+        "has_video": copied_candidate.has_video,
+        "quality_report": str(project.path_for("quality_report")),
+        "quality_2d_detection_people_count": report.metrics()["2d_detection_people_count"],
+        "config_valid": config_validation.valid,
+        "general_pose2sim_stages": list(GENERAL_POSE2SIM_STAGES),
+        "pipeline_command_stages": list(commands),
+        "caliscope_command": list(build_caliscope_command(project.root)),
+        "caliscope_settings": {
+            "path": str(settings_inspection.path),
+            "encoding": settings_inspection.encoding,
+            "valid": settings_inspection.valid,
+            "message": settings_inspection.message,
+        },
+    }
 
 
 def run_acceptance(source_root: Path, output_root: Path) -> dict[str, object]:
@@ -180,6 +250,12 @@ def run_acceptance(source_root: Path, output_root: Path) -> dict[str, object]:
         "correction_rerun_stages": list(CORRECTION_RERUN_STAGES),
         "video_reference": videos[0] if videos else None,
     }
+    result["existing_results"] = _verify_existing_results_trial(
+        source_root,
+        output_root,
+        calibration_source,
+        trc_source,
+    )
     if saved_count != 1 or restored_count != 1 or not backup_path.is_file():
         raise AssertionError("pose correction save/backup/restore acceptance failed")
     report_path = output_root / "acceptance.json"
