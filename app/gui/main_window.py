@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QObject, QSettings, QThread, Qt, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
@@ -26,6 +26,8 @@ from app.application.quality_correction_service import QualityCorrectionService
 from app.domain.addresses import CorrectionTarget, FrameAddress
 from app.media.frame_provider import MultiViewFrameProvider
 from app.project.manager import ProjectManager
+from app.project.discovery import ExistingResultDiscovery
+from app.project.importer import ExistingResultImporter
 
 from .layout import make_resizable_splitter, make_scrollable_panel
 from .pages.analysis_page import AnalysisPage
@@ -61,6 +63,24 @@ PAGE_LABELS: tuple[tuple[str, str], ...] = (
 )
 
 
+class _ExistingResultScanWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, root: Path) -> None:
+        super().__init__()
+        self.root = Path(root)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            candidates = ExistingResultDiscovery().scan(self.root)
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.finished.emit(candidates)
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -84,6 +104,8 @@ class MainWindow(QMainWindow):
         )
         self.controller.register_resource(self.frame_provider)
         self.unsaved_changes = False
+        self._discovery_thread: QThread | None = None
+        self._discovery_worker: _ExistingResultScanWorker | None = None
         self.page_ids = tuple(page_id for page_id, _ in PAGE_LABELS)
         self._pages: dict[str, QWidget] = {}
 
@@ -138,6 +160,10 @@ class MainWindow(QMainWindow):
         assert isinstance(project_page, ProjectPage)
         project_page.open_requested.connect(self.open_project_path)
         project_page.create_requested.connect(self.create_project)
+        project_page.import_existing_requested.connect(self.import_existing_path)
+        project_page.scan_parent_requested.connect(self.scan_existing_parent)
+        project_page.register_candidate_requested.connect(self.register_existing_candidate)
+        project_page.register_all_requested.connect(self.register_all_existing)
         correction_page = self._pages["correction_2d"]
         assert isinstance(correction_page, CorrectionPage)
         self.controller.register_editor("correction_2d", correction_page)
@@ -446,6 +472,88 @@ class MainWindow(QMainWindow):
             return False
         return self.open_project(project)
 
+    def import_existing_path(self, path: Path | str) -> bool:
+        project_page = self._pages.get("project")
+        try:
+            candidate = ExistingResultDiscovery().discover_one(Path(path))
+            project = ExistingResultImporter().register(candidate)
+        except (OSError, ValueError) as exc:
+            if isinstance(project_page, ProjectPage):
+                project_page.show_error(str(exc))
+            return False
+        return self.open_project(project)
+
+    def scan_existing_parent(self, path: Path | str) -> bool:
+        project_page = self._pages.get("project")
+        if self._discovery_thread is not None and self._discovery_thread.isRunning():
+            if isinstance(project_page, ProjectPage):
+                project_page.status.setText("已有目录扫描正在进行")
+            return False
+        if isinstance(project_page, ProjectPage):
+            project_page.status.setText("正在后台扫描已处理试次…")
+        thread = QThread(self)
+        worker = _ExistingResultScanWorker(Path(path))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._existing_scan_finished)
+        worker.failed.connect(self._existing_scan_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._existing_scan_thread_finished)
+        self._discovery_thread = thread
+        self._discovery_worker = worker
+        thread.start()
+        return True
+
+    @Slot(object)
+    def _existing_scan_finished(self, candidates: object) -> None:
+        project_page = self._pages.get("project")
+        if isinstance(project_page, ProjectPage):
+            project_page.set_candidates(tuple(candidates))
+
+    @Slot(str)
+    def _existing_scan_failed(self, reason: str) -> None:
+        project_page = self._pages.get("project")
+        if isinstance(project_page, ProjectPage):
+            project_page.show_error(f"扫描失败：{reason}")
+
+    @Slot()
+    def _existing_scan_thread_finished(self) -> None:
+        if self._discovery_worker is not None:
+            self._discovery_worker.deleteLater()
+        if self._discovery_thread is not None:
+            self._discovery_thread.deleteLater()
+        self._discovery_worker = None
+        self._discovery_thread = None
+
+    def register_existing_candidate(self, candidate: object) -> bool:
+        project_page = self._pages.get("project")
+        try:
+            project = ExistingResultImporter().register(candidate)
+        except (OSError, ValueError) as exc:
+            if isinstance(project_page, ProjectPage):
+                project_page.show_error(str(exc))
+            return False
+        return self.open_project(project)
+
+    def register_all_existing(self, candidates: object) -> int:
+        project_page = self._pages.get("project")
+        registered: list[ProjectManager] = []
+        failures: list[str] = []
+        for candidate in tuple(candidates):
+            try:
+                registered.append(ExistingResultImporter().register(candidate))
+            except (OSError, ValueError) as exc:
+                failures.append(f"{candidate.root.name}: {exc}")
+        if registered:
+            self.open_project(registered[0])
+        if isinstance(project_page, ProjectPage):
+            message = f"已登记 {len(registered)} 个试次"
+            if failures:
+                message += f"；失败 {len(failures)} 个：{'；'.join(failures)}"
+            project_page.status.setText(message)
+        return len(registered)
+
     @property
     def current_page(self) -> QWidget:
         return self.page_stack.currentWidget()
@@ -527,4 +635,7 @@ class MainWindow(QMainWindow):
         comparison_page = self._pages.get("comparison")
         if isinstance(comparison_page, ComparisonPage):
             comparison_page.close()
+        if self._discovery_thread is not None and self._discovery_thread.isRunning():
+            self._discovery_thread.quit()
+            self._discovery_thread.wait(5000)
         event.accept()
