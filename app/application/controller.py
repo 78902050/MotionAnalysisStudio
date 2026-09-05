@@ -21,6 +21,7 @@ class ApplicationController:
         self._editors: dict[str, DirtyEditor] = {}
         self._resources: list[ClosableResource] = []
         self._task_listeners: list[Callable[[TaskHandle], None]] = []
+        self._correction_rerun_handler: Callable[[ProjectManager, str], bool] | None = None
 
     def register_editor(self, name: str, editor: DirtyEditor) -> None:
         if not name.strip():
@@ -34,6 +35,26 @@ class ApplicationController:
     def add_task_listener(self, listener: Callable[[TaskHandle], None]) -> None:
         if listener not in self._task_listeners:
             self._task_listeners.append(listener)
+
+    def set_correction_rerun_handler(
+        self,
+        handler: Callable[[ProjectManager, str], bool] | None,
+    ) -> None:
+        self._correction_rerun_handler = handler
+
+    def has_correction_rerun_handler(self) -> bool:
+        return self._correction_rerun_handler is not None
+
+    def request_correction_rerun(self, session_id: str) -> bool:
+        if not session_id.strip():
+            raise ValueError("session_id must not be empty")
+        if self.current_project is None:
+            self.last_error = "没有打开的项目"
+            return False
+        if self._correction_rerun_handler is None:
+            self.last_error = "未配置 Pose2Sim 选择性重跑执行器"
+            return False
+        return bool(self._correction_rerun_handler(self.current_project, session_id))
 
     def dirty_states(self) -> tuple[DirtyState, ...]:
         return tuple(

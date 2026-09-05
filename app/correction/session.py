@@ -36,9 +36,22 @@ class CorrectionSession:
     def issue_ids(self) -> tuple[str, ...]:
         return tuple(self._issue_ids)
 
-    def open(self, issues: Iterable[CorrectionTarget]) -> None:
+    def open(
+        self,
+        issues: Iterable[CorrectionTarget],
+        issue_ids: Iterable[str] | None = None,
+    ) -> None:
         self._targets = list(issues)
-        self._issue_ids = [f"issue-{index + 1}" for index in range(len(self._targets))]
+        if issue_ids is None:
+            self._issue_ids = [f"issue-{index + 1}" for index in range(len(self._targets))]
+        else:
+            self._issue_ids = list(issue_ids)
+            if len(self._issue_ids) != len(self._targets):
+                raise ValueError("issue ID count must match correction target count")
+            if any(not issue_id.strip() for issue_id in self._issue_ids):
+                raise ValueError("issue IDs must not be empty")
+            if len(set(self._issue_ids)) != len(self._issue_ids):
+                raise ValueError("issue IDs must be unique")
         self._current_index = 0 if self._targets else -1
         for issue_id in self._issue_ids:
             self._dispositions.setdefault(issue_id, IssueDisposition(issue_id, "pending"))

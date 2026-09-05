@@ -20,6 +20,10 @@ from PySide6.QtWidgets import (
 )
 
 from app.application.controller import ApplicationController
+from app.application.correction_rerun_launcher import CorrectionRerunLauncher
+from app.application.quality_correction_service import QualityCorrectionService
+from app.domain.addresses import CorrectionTarget, FrameAddress
+from app.media.frame_provider import MultiViewFrameProvider
 from app.project.manager import ProjectManager
 
 from .layout import make_resizable_splitter, make_scrollable_panel
@@ -30,6 +34,8 @@ from .pages.comparison_page import ComparisonPage
 from .pages.correction_page import CorrectionPage
 from .pages.events_page import EventsPage
 from .pages.project_page import ProjectPage
+from .pages.quality_2d_page import Quality2DPage
+from .pages.quality_3d_page import Quality3DPage
 from .pages.synchronization_page import SynchronizationPage
 from .pages.tasks_page import TasksPage
 from .style import apply_style
@@ -63,7 +69,13 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(480, 360)
         self.resize(1120, 720)
         self.controller = controller or ApplicationController()
+        self._correction_rerun_launcher = CorrectionRerunLauncher(self.controller)
+        if not self.controller.has_correction_rerun_handler():
+            self.controller.set_correction_rerun_handler(self._correction_rerun_launcher)
         self.project: ProjectManager | None = self.controller.current_project
+        self.quality_correction_service: QualityCorrectionService | None = None
+        self.frame_provider = MultiViewFrameProvider()
+        self.controller.register_resource(self.frame_provider)
         self.unsaved_changes = False
         self.settings = QSettings("MotionAnalysisStudio", "MotionAnalysisStudio")
         self.page_ids = tuple(page_id for page_id, _ in PAGE_LABELS)
@@ -94,7 +106,9 @@ class MainWindow(QMainWindow):
                 if page_id == "calibration"
                 else SynchronizationPage()
                 if page_id == "synchronization"
-                else CorrectionPage()
+                else Quality2DPage()
+                if page_id == "quality_2d"
+                else CorrectionPage(provider=self.frame_provider, controller=self.controller)
                 if page_id == "correction_2d"
                 else AssociationPage()
                 if page_id == "association"
@@ -104,6 +118,8 @@ class MainWindow(QMainWindow):
                 if page_id == "events"
                 else ComparisonPage()
                 if page_id == "comparison"
+                else Quality3DPage()
+                if page_id == "quality_3d"
                 else self._build_page(page_id, label)
             )
             self._pages[page_id] = page
@@ -115,6 +131,11 @@ class MainWindow(QMainWindow):
         correction_page = self._pages["correction_2d"]
         assert isinstance(correction_page, CorrectionPage)
         self.controller.register_editor("correction_2d", correction_page)
+        correction_page.frame_requested.connect(self._open_correction_frame)
+        for page_id in ("quality_2d", "quality_3d"):
+            quality_page = self._pages[page_id]
+            assert isinstance(quality_page, (Quality2DPage, Quality3DPage))
+            quality_page.target_requested.connect(self._open_correction_target)
         self.workspace_splitter = make_resizable_splitter(self.navigation, self.page_stack)
         self.workspace_splitter.setObjectName("workspace_splitter")
         root_layout.addWidget(self.workspace_splitter, 1)
@@ -227,7 +248,10 @@ class MainWindow(QMainWindow):
     def navigate(self, page_id: str) -> bool:
         if page_id not in self._pages:
             return False
-        self.page_stack.setCurrentWidget(self._pages[page_id])
+        page = self._pages[page_id]
+        if self.project is not None and isinstance(page, (Quality2DPage, Quality3DPage)):
+            page.set_project(self.project)
+        self.page_stack.setCurrentWidget(page)
         matches = self.navigation_list.findItems(
             next(label for candidate, label in PAGE_LABELS if candidate == page_id),
             Qt.MatchFlag.MatchExactly,
@@ -250,6 +274,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(message)
             return False
         self.project = project
+        self.quality_correction_service = QualityCorrectionService(project)
         self.project_label.setText(str(project.manifest.get("name", project.root.name)))
         stages = project.manifest.get("stages", {})
         active_stage = next(
@@ -265,6 +290,10 @@ class MainWindow(QMainWindow):
             synchronization_page.set_project(project)
         correction_page = self._pages.get("correction_2d")
         if isinstance(correction_page, CorrectionPage):
+            correction_page.clear_project_context()
+            correction_page.set_timeline_range(
+                *self.quality_correction_service.timeline_bounds()
+            )
             cameras = []
             for record in project.manifest.get("cameras", []):
                 if not isinstance(record, dict):
@@ -273,6 +302,22 @@ class MainWindow(QMainWindow):
                 if isinstance(camera_id, str) and camera_id.strip():
                     cameras.append(camera_id)
             correction_page.set_cameras(cameras)
+            videos: dict[str, Path] = {}
+            for record in project.manifest.get("cameras", []):
+                if not isinstance(record, dict):
+                    continue
+                camera_id = record.get("camera_id")
+                path_value = record.get("video_path")
+                if isinstance(camera_id, str) and isinstance(path_value, str) and path_value:
+                    candidate = Path(path_value)
+                    if not candidate.is_absolute():
+                        candidate = project.root / candidate
+                    videos[camera_id] = candidate
+            self.frame_provider.set_project(str(project.manifest["project_id"]), videos)
+        for page_id in ("quality_2d", "quality_3d"):
+            quality_page = self._pages.get(page_id)
+            if isinstance(quality_page, (Quality2DPage, Quality3DPage)):
+                quality_page.set_project(project)
         association_page = self._pages.get("association")
         if isinstance(association_page, AssociationPage):
             association_page.set_project(project)
@@ -290,6 +335,67 @@ class MainWindow(QMainWindow):
             project_page.set_project(project)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
         return True
+
+    def _open_correction_target(self, target: CorrectionTarget) -> bool:
+        service = self.quality_correction_service
+        correction_page = self._pages.get("correction_2d")
+        if service is None or not isinstance(correction_page, CorrectionPage):
+            self.statusBar().showMessage("请先打开质量报告所属项目")
+            return False
+        if correction_page.dirty_state().dirty:
+            decision = self._ask_dirty_decision()
+            if decision == "cancel":
+                self.statusBar().showMessage("已取消切换修正目标")
+                return False
+            if decision == "save":
+                if not correction_page.save():
+                    self.statusBar().showMessage("保存失败，仍停留在原修正目标")
+                    return False
+            else:
+                correction_page.discard_unsaved()
+        resolution = service.resolve_target(target)
+        session = service.create_session(resolution) if resolution.can_edit else None
+        correction_page.open_resolution(resolution, session)
+        cameras = tuple(
+            str(record["camera_id"])
+            for record in self.project.manifest.get("cameras", [])
+            if isinstance(record, dict)
+            and isinstance(record.get("camera_id"), str)
+            and record["camera_id"].strip()
+        ) if self.project is not None else ()
+        if resolution.synchronized_frame is not None:
+            addresses, failures = service.raw_view_addresses(
+                resolution.synchronized_frame,
+                cameras,
+            )
+            correction_page.set_view_addresses(addresses, failures)
+        self.navigate("correction_2d")
+        if resolution.blocker:
+            self.statusBar().showMessage(resolution.blocker)
+        return True
+
+    def _open_correction_frame(self, synchronized_frame: int) -> None:
+        correction_page = self._pages.get("correction_2d")
+        if not isinstance(correction_page, CorrectionPage):
+            return
+        resolution = correction_page.resolution
+        target = resolution.report_target if resolution is not None else None
+        if target is None:
+            return
+        previous_frame = resolution.synchronized_frame
+        opened = self._open_correction_target(
+            CorrectionTarget(
+                FrameAddress(
+                    target.address.camera,
+                    target.address.timeline,
+                    int(synchronized_frame),
+                ),
+                target.person,
+                target.keypoint,
+            )
+        )
+        if not opened and previous_frame is not None:
+            correction_page.timeline.setValue(previous_frame)
 
     def open_project_path(self, path: Path | str) -> bool:
         project_page = self._pages.get("project")
