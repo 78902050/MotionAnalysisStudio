@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QPushButton,
     QScrollArea,
@@ -27,6 +29,9 @@ from app.application.controller import ApplicationController
 from app.project.manager import ProjectManager
 from app.tasks.base import TaskRequest
 from app.tasks.handle import TaskHandle
+from app.external_tools.caliscope_settings import CaliscopeSettingsDiagnostic
+from app.external_tools.launcher import ExternalProcessHandle, ExternalToolLaunchError, ExternalToolLauncher
+from app.external_tools.model import build_caliscope_command
 
 
 class CalibrationPage(QWidget):
@@ -36,10 +41,14 @@ class CalibrationPage(QWidget):
         parent: QWidget | None = None,
         *,
         controller: ApplicationController | None = None,
+        settings: QSettings | None = None,
+        launcher: ExternalToolLauncher | None = None,
     ) -> None:
         super().__init__(parent)
         self.project = project
         self.controller = controller
+        self.settings = settings or QSettings("MotionAnalysisStudio", "MotionAnalysisStudio")
+        self.launcher = launcher or ExternalToolLauncher()
         self.importer = CalibrationImporter()
         self.diagnostics = CalibrationDiagnostics()
         self.pending_preview: CalibrationPreview | None = None
@@ -48,7 +57,13 @@ class CalibrationPage(QWidget):
         self._preview_timer = QTimer(self)
         self._preview_timer.setInterval(25)
         self._preview_timer.timeout.connect(self._poll_preview)
+        self._caliscope_handle: ExternalProcessHandle | None = None
+        self._caliscope_timer = QTimer(self)
+        self._caliscope_timer.setInterval(500)
+        self._caliscope_timer.timeout.connect(self._poll_caliscope)
         self._build_ui()
+        if self.project is not None:
+            self.caliscope_workspace.setText(str(self.project.root))
         self.refresh()
 
     def _build_ui(self) -> None:
@@ -62,6 +77,42 @@ class CalibrationPage(QWidget):
         description.setWordWrap(True)
         description.setStyleSheet("color: #aab9c4; font-size: 14px;")
         layout.addWidget(description)
+
+        tool_card = QFrame()
+        tool_card.setObjectName("caliscope_tool_card")
+        tool_form = QFormLayout(tool_card)
+        workspace_row = QWidget()
+        workspace_layout = QHBoxLayout(workspace_row)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        self.caliscope_workspace = QLineEdit()
+        self.caliscope_workspace.setObjectName("caliscope_workspace")
+        workspace_button = QPushButton("选择")
+        workspace_button.clicked.connect(self.choose_workspace)
+        workspace_layout.addWidget(self.caliscope_workspace, 1)
+        workspace_layout.addWidget(workspace_button)
+        tool_form.addRow("Caliscope 工作区", workspace_row)
+        tool_actions = QWidget()
+        tool_actions_layout = QHBoxLayout(tool_actions)
+        tool_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self.launch_caliscope_button = QPushButton("启动 Caliscope")
+        self.launch_caliscope_button.setObjectName("calibration_launch_button")
+        self.launch_caliscope_button.clicked.connect(self.launch_caliscope)
+        self.convert_settings_button = QPushButton("备份并转换为 UTF-8")
+        self.convert_settings_button.setObjectName("caliscope_convert_settings_button")
+        self.convert_settings_button.clicked.connect(self.convert_caliscope_settings)
+        tool_actions_layout.addWidget(self.launch_caliscope_button)
+        tool_actions_layout.addWidget(self.convert_settings_button)
+        tool_actions_layout.addStretch(1)
+        tool_form.addRow("外部工具", tool_actions)
+        self.caliscope_settings_status = QLabel("—")
+        self.caliscope_settings_status.setWordWrap(True)
+        self.caliscope_settings_status.setObjectName("caliscope_settings_status")
+        self.caliscope_status = QLabel("尚未启动")
+        self.caliscope_status.setWordWrap(True)
+        self.caliscope_status.setObjectName("caliscope_launch_status")
+        tool_form.addRow("设置诊断", self.caliscope_settings_status)
+        tool_form.addRow("运行状态", self.caliscope_status)
+        layout.addWidget(tool_card)
 
         actions = QHBoxLayout()
         self.import_button = QPushButton("导入标定文件")
@@ -145,6 +196,7 @@ class CalibrationPage(QWidget):
         details_splitter.setStretchFactor(0, 2)
         details_splitter.setStretchFactor(1, 1)
         layout.addWidget(details_splitter, 1)
+        self.refresh_caliscope_settings_diagnostic()
 
     @staticmethod
     def _parameter_label(object_name: str) -> QLabel:
@@ -197,7 +249,77 @@ class CalibrationPage(QWidget):
         self._preview_handle = None
         self.pending_preview = None
         self.project = project
+        self.caliscope_workspace.setText(str(project.root) if project is not None else "")
         self.refresh()
+
+    def choose_workspace(self) -> None:
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "选择 Caliscope 工作区",
+            self.caliscope_workspace.text().strip(),
+        )
+        if selected:
+            self.caliscope_workspace.setText(selected)
+
+    def launch_caliscope(self) -> bool:
+        if self._caliscope_handle is not None and self._caliscope_handle.poll() is None:
+            self.caliscope_status.setText("Caliscope 正在运行，请先使用已打开的窗口")
+            return False
+        workspace_text = self.caliscope_workspace.text().strip()
+        if not workspace_text and self.project is not None:
+            workspace_text = str(self.project.root)
+            self.caliscope_workspace.setText(workspace_text)
+        workspace = Path(workspace_text) if workspace_text else None
+        if workspace is None or not workspace.is_dir():
+            self.caliscope_status.setText("请选择存在的 Caliscope 工作区")
+            return False
+        configured = str(self.settings.value("tools/caliscope_path", "")).strip()
+        command = build_caliscope_command(workspace, configured or None)
+        log_root = self.project.root if self.project is not None else workspace
+        log_path = log_root / "logs" / f"caliscope-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        try:
+            handle = self.launcher.start(command, workspace, log_path)
+        except (ExternalToolLaunchError, OSError) as exc:
+            self.caliscope_status.setText(f"启动失败：{exc}")
+            return False
+        self._caliscope_handle = handle
+        if self.controller is not None:
+            self.controller.register_resource(handle)
+        self._caliscope_timer.start()
+        self.caliscope_status.setText(f"已启动；日志：{log_path}")
+        return True
+
+    def _poll_caliscope(self) -> None:
+        handle = self._caliscope_handle
+        if handle is None:
+            self._caliscope_timer.stop()
+            return
+        return_code = handle.poll()
+        if return_code is None:
+            return
+        self._caliscope_timer.stop()
+        self.caliscope_status.setText(
+            f"Caliscope 已退出（代码 {return_code}）；日志：{handle.log_path}"
+        )
+
+    def refresh_caliscope_settings_diagnostic(self) -> None:
+        path = CaliscopeSettingsDiagnostic.default_path()
+        diagnostic = CaliscopeSettingsDiagnostic.inspect(path)
+        self.caliscope_settings_status.setText(f"{path}：{diagnostic.message}")
+        self.convert_settings_button.setEnabled(
+            diagnostic.valid and diagnostic.encoding != "utf-8"
+        )
+
+    def convert_caliscope_settings(self) -> bool:
+        path = CaliscopeSettingsDiagnostic.default_path()
+        try:
+            backup = CaliscopeSettingsDiagnostic.convert_to_utf8(path)
+        except (OSError, ValueError) as exc:
+            self.caliscope_settings_status.setText(f"转换失败：{exc}")
+            return False
+        self.refresh_caliscope_settings_diagnostic()
+        self.caliscope_settings_status.setText(f"已转换为 UTF-8；备份：{backup}")
+        return True
 
     def choose_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

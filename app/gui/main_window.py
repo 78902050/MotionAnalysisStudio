@@ -141,7 +141,7 @@ class MainWindow(QMainWindow):
                 if page_id == "settings"
                 else TasksPage(self.controller.supervisor)
                 if page_id == "tasks"
-                else CalibrationPage(controller=self.controller)
+                else CalibrationPage(controller=self.controller, settings=self.settings)
                 if page_id == "calibration"
                 else SynchronizationPage(controller=self.controller)
                 if page_id == "synchronization"
