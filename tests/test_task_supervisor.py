@@ -108,6 +108,26 @@ class TaskSupervisorTests(unittest.TestCase):
         self.assertEqual(handle.wait(2).status, "cancelled")
         self.assertEqual(supervisor.snapshot(handle.task_id).status, "cancelled")
 
+    def test_snapshots_returns_task_list_for_task_page(self) -> None:
+        supervisor_type = self._supervisor_type()
+        supervisor = supervisor_type()
+        release = threading.Event()
+
+        def work(token):
+            release.wait(2)
+            return "finished"
+
+        handle = supervisor.start(TaskRequest("project-a", 5, "列表任务", {}), work)
+        self.addCleanup(supervisor.wait_for_shutdown, 1000)
+        self.addCleanup(release.set)
+        self.addCleanup(handle.cancel)
+
+        snapshots = supervisor.snapshots()
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0].task_id, handle.task_id)
+        self.assertEqual(snapshots[0].name, "列表任务")
+
 
 if __name__ == "__main__":
     unittest.main()

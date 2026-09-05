@@ -115,6 +115,14 @@ class TaskCenter:
                 state.thread.join(remaining)
         return all(state.thread is None or not state.thread.is_alive() for state in states)
 
+    def cancel_all(self) -> None:
+        with self._lock:
+            task_ids = list(self._tasks)
+        for task_id in task_ids:
+            state = self._get(task_id)
+            if not state.done.is_set():
+                self.cancel(task_id)
+
     def snapshot(self, task_id: str) -> TaskSnapshot:
         with self._lock:
             try:
@@ -129,6 +137,20 @@ class TaskCenter:
                 state.request.name,
                 state.status,
                 result.error if result is not None else None,
+            )
+
+    def snapshots(self) -> tuple[TaskSnapshot, ...]:
+        with self._lock:
+            return tuple(
+                TaskSnapshot(
+                    task_id,
+                    state.request.project_id,
+                    state.request.generation,
+                    state.request.name,
+                    state.status,
+                    state.result.error if state.result is not None else None,
+                )
+                for task_id, state in self._tasks.items()
             )
 
     @staticmethod

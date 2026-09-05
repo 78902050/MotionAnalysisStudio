@@ -1,9 +1,12 @@
 import json
+import os
 import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
+from app.io.transactions import ProjectTransaction
 from app.project import manager as project_manager_module
 from app.project.manager import ProjectManager
 from app.project.migration import migrate_v2_manifest
@@ -134,6 +137,35 @@ class ProjectManagerTests(unittest.TestCase):
             self.fail(f"migration does not support a stable project identity: {exc}")
 
         self.assertEqual(first["project_id"], second["project_id"])
+
+    def test_open_recovers_incomplete_project_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "项目"
+            ProjectManager.create(root, "自动恢复")
+            data_path = root / "reports" / "state.json"
+            data_path.write_text('{"value": 1}\n', encoding="utf-8")
+            transaction = ProjectTransaction(root, transaction_id="tx-open-recovery")
+            transaction.prepare_json("reports/state.json", {"value": 2})
+            transaction.prepare_json("reports/second.json", {"value": 3})
+            real_replace = os.replace
+            replacements = 0
+
+            def fail_second_replace(source, destination):
+                nonlocal replacements
+                replacements += 1
+                if replacements == 2:
+                    raise OSError("interrupted commit")
+                return real_replace(source, destination)
+
+            with patch("app.io.transactions.os.replace", side_effect=fail_second_replace):
+                with self.assertRaisesRegex(OSError, "interrupted commit"):
+                    transaction.commit()
+            self.assertEqual(json.loads(data_path.read_text(encoding="utf-8")), {"value": 2})
+
+            opened = ProjectManager.open(root)
+
+            self.assertEqual(json.loads(data_path.read_text(encoding="utf-8")), {"value": 1})
+            self.assertEqual(opened.recovered_transactions, ("tx-open-recovery",))
 
 
 if __name__ == "__main__":

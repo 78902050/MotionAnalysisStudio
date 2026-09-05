@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.io.atomic import AtomicJsonStore
+from app.io.transactions import TransactionRecovery
 from app.pipeline.dependency_graph import invalidate_manifest
 
 from .manifest import PROJECT_DIRECTORIES, new_project_manifest
@@ -23,6 +24,7 @@ class ProjectManager:
     root: Path
     manifest: dict[str, Any]
     migrated: bool = False
+    recovered_transactions: tuple[str, ...] = ()
 
     @classmethod
     def create(cls, root: Path, name: str) -> "ProjectManager":
@@ -41,6 +43,7 @@ class ProjectManager:
     @classmethod
     def open(cls, root: Path) -> "ProjectManager":
         root = Path(root).resolve()
+        recovered_transactions = tuple(TransactionRecovery(root).recover_all())
         manifest_path = root / "manifest.json"
         if not manifest_path.is_file():
             raise FileNotFoundError(f"project manifest not found: {manifest_path}")
@@ -51,7 +54,11 @@ class ProjectManager:
         if not isinstance(manifest, dict):
             raise ValueError("project manifest must contain a JSON object")
 
-        manager = cls(root=root, manifest=manifest)
+        manager = cls(
+            root=root,
+            manifest=manifest,
+            recovered_transactions=recovered_transactions,
+        )
         manager.migrate_if_needed()
         manager._ensure_layout()
         return manager

@@ -1,7 +1,10 @@
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9,7 +12,23 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QScrollArea, QSplitter
 
 from app.gui.main_window import MainWindow
+from app.gui.pages.project_page import ProjectPage
+from app.gui.pages.tasks_page import TasksPage
 from app.project.manager import ProjectManager
+from app.tasks.base import TaskRequest
+
+
+class _FailingEditor:
+    def dirty_state(self):
+        from app.application.dirty_state import DirtyState
+
+        return DirtyState(True, "测试编辑器")
+
+    def save(self) -> bool:
+        return False
+
+    def discard_unsaved(self) -> None:
+        pass
 
 
 class GuiShellTests(unittest.TestCase):
@@ -67,6 +86,62 @@ class GuiShellTests(unittest.TestCase):
         window = MainWindow()
 
         self.assertTrue(window.request_close_with_unsaved_guard())
+
+    def test_project_and_task_pages_are_real_controller_backed_pages(self) -> None:
+        window = MainWindow()
+
+        self.assertIsInstance(window._pages["project"], ProjectPage)
+        self.assertIsInstance(window._pages["tasks"], TasksPage)
+        self.assertIs(window._pages["tasks"].supervisor, window.controller.supervisor)
+
+    def test_open_project_path_updates_controller_and_project_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = ProjectManager.create(Path(directory) / "项目一", "项目一")
+            window = MainWindow()
+
+            self.assertTrue(window.open_project_path(project.root))
+
+            self.assertEqual(window.controller.current_project.root, project.root)
+            self.assertIn("项目一", window._pages["project"].current_project.text())
+
+    def test_save_failure_keeps_window_open(self) -> None:
+        window = MainWindow()
+        window.controller.register_editor("failing", _FailingEditor())
+
+        with patch.object(window, "_ask_dirty_decision", return_value="save"):
+            self.assertFalse(window.request_close_with_unsaved_guard())
+
+    def test_controller_task_binds_status_strip_and_cancel_button(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = ProjectManager.create(Path(directory) / "项目", "任务项目")
+            window = MainWindow()
+            self.assertTrue(window.open_project(project))
+            started = threading.Event()
+
+            def work(token):
+                started.set()
+                while not token.is_cancelled:
+                    time.sleep(0.01)
+                return "stopped"
+
+            handle = window.controller.start_task(
+                TaskRequest(
+                    str(project.manifest["project_id"]),
+                    window.controller.generation,
+                    "后台校验",
+                    {},
+                ),
+                work,
+            )
+            self.addCleanup(window.controller.supervisor.wait_for_shutdown, 1000)
+            self.addCleanup(handle.cancel)
+            self.assertTrue(started.wait(1))
+            self.application.processEvents()
+
+            self.assertTrue(window.task_strip.cancel_button.isEnabled())
+            self.assertIn("后台校验", window.task_strip.label.text())
+            window.task_strip.cancel_button.click()
+            self.assertEqual(handle.wait(2).status, "cancelled")
 
 
 if __name__ == "__main__":

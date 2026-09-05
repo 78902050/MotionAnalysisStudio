@@ -1,5 +1,7 @@
 """Resizable desktop shell for the motion-analysis workspace."""
 
+from pathlib import Path
+
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.application.controller import ApplicationController
 from app.project.manager import ProjectManager
 
 from .layout import make_resizable_splitter, make_scrollable_panel
@@ -26,7 +29,9 @@ from .pages.calibration_page import CalibrationPage
 from .pages.comparison_page import ComparisonPage
 from .pages.correction_page import CorrectionPage
 from .pages.events_page import EventsPage
+from .pages.project_page import ProjectPage
 from .pages.synchronization_page import SynchronizationPage
+from .pages.tasks_page import TasksPage
 from .style import apply_style
 from .task_center import TaskStatusStrip
 
@@ -48,12 +53,17 @@ PAGE_LABELS: tuple[tuple[str, str], ...] = (
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        controller: ApplicationController | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Motion Analysis Studio")
         self.setMinimumSize(480, 360)
         self.resize(1120, 720)
-        self.project: ProjectManager | None = None
+        self.controller = controller or ApplicationController()
+        self.project: ProjectManager | None = self.controller.current_project
         self.unsaved_changes = False
         self.settings = QSettings("MotionAnalysisStudio", "MotionAnalysisStudio")
         self.page_ids = tuple(page_id for page_id, _ in PAGE_LABELS)
@@ -76,7 +86,11 @@ class MainWindow(QMainWindow):
         self.page_stack.setObjectName("page_stack")
         for page_id, label in PAGE_LABELS:
             page = (
-                CalibrationPage()
+                ProjectPage()
+                if page_id == "project"
+                else TasksPage(self.controller.supervisor)
+                if page_id == "tasks"
+                else CalibrationPage()
                 if page_id == "calibration"
                 else SynchronizationPage()
                 if page_id == "synchronization"
@@ -94,12 +108,20 @@ class MainWindow(QMainWindow):
             )
             self._pages[page_id] = page
             self.page_stack.addWidget(page)
+        project_page = self._pages["project"]
+        assert isinstance(project_page, ProjectPage)
+        project_page.open_requested.connect(self.open_project_path)
+        project_page.create_requested.connect(self.create_project)
+        correction_page = self._pages["correction_2d"]
+        assert isinstance(correction_page, CorrectionPage)
+        self.controller.register_editor("correction_2d", correction_page)
         self.workspace_splitter = make_resizable_splitter(self.navigation, self.page_stack)
         self.workspace_splitter.setObjectName("workspace_splitter")
         root_layout.addWidget(self.workspace_splitter, 1)
 
         self.task_strip = TaskStatusStrip()
         root_layout.addWidget(self.task_strip)
+        self.controller.add_task_listener(self.task_strip.set_handle)
         self.setCentralWidget(root)
         self.statusBar().showMessage("就绪")
         self.navigate("project")
@@ -214,7 +236,19 @@ class MainWindow(QMainWindow):
             self.navigation_list.setCurrentItem(matches[0])
         return True
 
-    def open_project(self, project: ProjectManager) -> None:
+    def open_project(
+        self,
+        project: ProjectManager,
+        *,
+        dirty_decision: str | None = None,
+    ) -> bool:
+        decision = dirty_decision
+        if decision is None:
+            decision = self._ask_dirty_decision() if self.controller.dirty_states() else "discard"
+        if not self.controller.open_project(project, dirty_decision=decision):
+            message = self.controller.last_error or "未切换项目"
+            self.statusBar().showMessage(message)
+            return False
         self.project = project
         self.project_label.setText(str(project.manifest.get("name", project.root.name)))
         stages = project.manifest.get("stages", {})
@@ -251,7 +285,31 @@ class MainWindow(QMainWindow):
         comparison_page = self._pages.get("comparison")
         if isinstance(comparison_page, ComparisonPage):
             comparison_page.set_project(project)
+        project_page = self._pages.get("project")
+        if isinstance(project_page, ProjectPage):
+            project_page.set_project(project)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
+        return True
+
+    def open_project_path(self, path: Path | str) -> bool:
+        project_page = self._pages.get("project")
+        try:
+            project = ProjectManager.open(Path(path))
+        except (OSError, ValueError) as exc:
+            if isinstance(project_page, ProjectPage):
+                project_page.show_error(str(exc))
+            return False
+        return self.open_project(project)
+
+    def create_project(self, path: Path | str, name: str) -> bool:
+        project_page = self._pages.get("project")
+        try:
+            project = ProjectManager.create(Path(path), name)
+        except (OSError, ValueError) as exc:
+            if isinstance(project_page, ProjectPage):
+                project_page.show_error(str(exc))
+            return False
+        return self.open_project(project)
 
     @property
     def current_page(self) -> QWidget:
@@ -262,18 +320,36 @@ class MainWindow(QMainWindow):
         self.save_label.setText("保存状态：有未保存更改" if value else "保存状态：无更改")
 
     def request_close_with_unsaved_guard(self) -> bool:
-        if not self.unsaved_changes:
-            return True
+        dirty = self.controller.dirty_states()
+        if not dirty and not self.unsaved_changes:
+            return self.controller.shutdown(dirty_decision="discard")
+        decision = self._ask_dirty_decision()
+        if decision == "cancel":
+            return False
+        if self.unsaved_changes and not dirty:
+            if decision == "save":
+                self.statusBar().showMessage("没有可执行保存的编辑服务")
+                return False
+            self.set_unsaved_changes(False)
+        closed = self.controller.shutdown(dirty_decision=decision)
+        if not closed:
+            self.statusBar().showMessage(self.controller.last_error or "无法关闭")
+        return closed
+
+    def _ask_dirty_decision(self) -> str:
         box = QMessageBox(self)
         box.setWindowTitle("未保存更改")
         box.setText("当前页面有未保存更改。")
         save = box.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
         discard = box.addButton("放弃", QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        cancel = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
         box.exec()
         if box.clickedButton() is save:
-            return True
-        return box.clickedButton() is discard
+            return "save"
+        if box.clickedButton() is discard:
+            return "discard"
+        assert box.clickedButton() is cancel or box.clickedButton() is None
+        return "cancel"
 
     def toggle_navigation(self) -> None:
         collapsed = self.navigation.width() > 60

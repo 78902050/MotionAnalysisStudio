@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.domain.addresses import CorrectionTarget
+from app.application.dirty_state import DirtyState
 
 from ..layout import make_resizable_splitter, make_scrollable_panel
 
@@ -264,16 +265,30 @@ class CorrectionPage(QWidget):
         self.person_value.setText(target.person.project_person_id)
         self.keypoint_value.setText(target.keypoint.keypoint_name)
 
-    def save(self) -> None:
+    def dirty_state(self) -> DirtyState:
+        dirty = bool(self.session is not None and self.session.has_unsaved_changes())
+        return DirtyState(dirty, "二维修正", "存在未保存的二维关节点修改" if dirty else "")
+
+    def save(self) -> bool:
         if self.session is None:
             self.session_status.setText("无会话可保存")
-            return
-        count, _ = self.session.save(note=self.note_value.text())
+            return False
+        try:
+            count, _ = self.session.save(note=self.note_value.text())
+        except Exception as exc:
+            self.session_status.setText(f"保存失败：{exc}")
+            return False
         self.session_status.setText(f"已保存 {count} 项")
+        return True
+
+    def discard_unsaved(self) -> None:
+        if self.session is not None:
+            self.session.discard_unsaved()
+            self.session_status.setText("已放弃未保存修改")
 
     def save_and_rerun(self) -> None:
-        self.save()
-        self.session_status.setText("已保存；选择性重跑由任务中心启动")
+        if self.save():
+            self.session_status.setText("已保存；选择性重跑由任务中心启动")
 
     def _previous_issue(self) -> None:
         if self.session is not None:
