@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, Signal
@@ -43,6 +44,8 @@ class CorrectionCanvas(QWidget):
         self._image = QImage()
         self._selected_point: QPointF | None = None
         self._points: dict[str, tuple[float, float, float]] = {}
+        self._data_width = 0.0
+        self._data_height = 0.0
         self._zoom = 1.0
         self._dragging_point = False
         self.setMinimumSize(120, 100)
@@ -51,6 +54,11 @@ class CorrectionCanvas(QWidget):
     @property
     def has_frame(self) -> bool:
         return not self._image.isNull()
+
+    @property
+    def has_coordinate_space(self) -> bool:
+        width, height = self._space_size()
+        return width > 0 and height > 0
 
     @property
     def point_count(self) -> int:
@@ -73,6 +81,8 @@ class CorrectionCanvas(QWidget):
                 QImage.Format.Format_BGR888,
             ).copy()
         self._image = converted
+        self._data_width = float(converted.width())
+        self._data_height = float(converted.height())
         self.update()
 
     def set_selected_point(self, x: float, y: float) -> None:
@@ -81,12 +91,28 @@ class CorrectionCanvas(QWidget):
 
     def set_pose_points(self, points: dict[str, tuple[float, float, float]]) -> None:
         self._points = dict(points)
+        if self._image.isNull() and points:
+            finite_points = [
+                (float(x), float(y))
+                for x, y, _confidence in points.values()
+                if math.isfinite(float(x))
+                and math.isfinite(float(y))
+                and float(x) >= 0
+                and float(y) >= 0
+            ]
+            if finite_points:
+                maximum_x = max(point[0] for point in finite_points)
+                maximum_y = max(point[1] for point in finite_points)
+                self._data_width = max(640.0, maximum_x * 1.05 + 1.0)
+                self._data_height = max(480.0, maximum_y * 1.05 + 1.0)
         self.update()
 
     def clear(self) -> None:
         self._image = QImage()
         self._selected_point = None
         self._points.clear()
+        self._data_width = 0.0
+        self._data_height = 0.0
         self._zoom = 1.0
         self._dragging_point = False
         self.update()
@@ -97,6 +123,10 @@ class CorrectionCanvas(QWidget):
         target = self._image_rect()
         if not self._image.isNull():
             painter.drawImage(target, self._image)
+        elif not target.isEmpty():
+            painter.fillRect(target, QColor("#111d28"))
+            painter.setPen(QPen(QColor("#2a3b49"), 1))
+            painter.drawRect(target)
         if not target.isEmpty():
             painter.setPen(QPen(QColor("#75d7c7"), 1))
             painter.setBrush(QColor(117, 215, 199, 125))
@@ -116,7 +146,7 @@ class CorrectionCanvas(QWidget):
         if (
             event.button() == Qt.MouseButton.LeftButton
             and self._selected_point is not None
-            and not self._image.isNull()
+            and self.has_coordinate_space
         ):
             selected = self._image_to_widget(self._selected_point)
             delta = event.position() - selected
@@ -126,8 +156,9 @@ class CorrectionCanvas(QWidget):
     def mouseMoveEvent(self, event) -> None:
         if self._dragging_point:
             point = self._widget_to_image(event.position())
-            x = min(max(point.x(), 0.0), max(0.0, self._image.width() - 1.0))
-            y = min(max(point.y(), 0.0), max(0.0, self._image.height() - 1.0))
+            width, height = self._space_size()
+            x = min(max(point.x(), 0.0), max(0.0, width - 1.0))
+            y = min(max(point.y(), 0.0), max(0.0, height - 1.0))
             self.set_selected_point(x, y)
             self.point_moved.emit(x, y)
         super().mouseMoveEvent(event)
@@ -143,26 +174,34 @@ class CorrectionCanvas(QWidget):
         event.accept()
 
     def _image_rect(self) -> QRectF:
-        if self._image.isNull() or self.width() <= 0 or self.height() <= 0:
+        data_width, data_height = self._space_size()
+        if data_width <= 0 or data_height <= 0 or self.width() <= 0 or self.height() <= 0:
             return QRectF()
-        scale = min(self.width() / self._image.width(), self.height() / self._image.height()) * self._zoom
-        width = self._image.width() * scale
-        height = self._image.height() * scale
+        scale = min(self.width() / data_width, self.height() / data_height) * self._zoom
+        width = data_width * scale
+        height = data_height * scale
         return QRectF((self.width() - width) / 2, (self.height() - height) / 2, width, height)
 
     def _image_to_widget(self, point: QPointF) -> QPointF:
         target = self._image_rect()
+        data_width, data_height = self._space_size()
         return QPointF(
-            target.left() + point.x() * target.width() / self._image.width(),
-            target.top() + point.y() * target.height() / self._image.height(),
+            target.left() + point.x() * target.width() / data_width,
+            target.top() + point.y() * target.height() / data_height,
         )
 
     def _widget_to_image(self, point: QPointF) -> QPointF:
         target = self._image_rect()
+        data_width, data_height = self._space_size()
         return QPointF(
-            (point.x() - target.left()) * self._image.width() / target.width(),
-            (point.y() - target.top()) * self._image.height() / target.height(),
+            (point.x() - target.left()) * data_width / target.width(),
+            (point.y() - target.top()) * data_height / target.height(),
         )
+
+    def _space_size(self) -> tuple[float, float]:
+        if not self._image.isNull():
+            return float(self._image.width()), float(self._image.height())
+        return self._data_width, self._data_height
 
 
 class CorrectionPage(QWidget):

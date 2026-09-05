@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -238,7 +239,9 @@ class QualityAuditService:
         payloads: dict[str, dict[str, Any]] = {}
         keypoint_indices: dict[str, int] = {}
         detections: set[tuple[str, int, int]] = set()
-        for path in sorted(directory.glob("*.json")):
+        paths = sorted(directory.glob("*.json"))
+        paths.extend(sorted(directory.glob("*_json/*.json")))
+        for path in paths:
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -252,7 +255,13 @@ class QualityAuditService:
                 continue
             if not isinstance(value, dict):
                 continue
-            camera = str(value.get("camera", path.stem))
+            is_pose2sim_frame = path.parent != directory and path.parent.name.endswith("_json")
+            camera = str(
+                value.get(
+                    "camera",
+                    path.parent.name.removesuffix("_json") if is_pose2sim_frame else path.stem,
+                )
+            )
             payloads[camera] = value
             names = value.get("keypoint_names")
             if isinstance(names, list):
@@ -266,6 +275,15 @@ class QualityAuditService:
                 for person_record in self._records(frame_record.get("people")):
                     raw_index = person_record.get("raw_person_index")
                     if isinstance(raw_index, int) and raw_index >= 0:
+                        detections.add((camera, frame, raw_index))
+            if is_pose2sim_frame:
+                match = re.search(r"(\d+)$", path.stem)
+                if match is None:
+                    continue
+                frame = int(match.group(1))
+                for raw_index, person_record in enumerate(self._records(value.get("people"))):
+                    values = person_record.get("pose_keypoints_2d")
+                    if isinstance(values, list) and values:
                         detections.add((camera, frame, raw_index))
         return payloads, keypoint_indices, len(detections)
 

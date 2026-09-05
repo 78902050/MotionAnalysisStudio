@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
@@ -28,6 +28,9 @@ from app.media.frame_provider import MultiViewFrameProvider
 from app.project.manager import ProjectManager
 from app.project.discovery import ExistingResultDiscovery
 from app.project.importer import ExistingResultImporter
+from app.quality.audit import QualityAuditService
+from app.tasks.base import TaskRequest
+from app.tasks.handle import TaskHandle
 
 from .layout import make_resizable_splitter, make_scrollable_panel
 from .pages.analysis_page import AnalysisPage
@@ -106,6 +109,10 @@ class MainWindow(QMainWindow):
         self.unsaved_changes = False
         self._discovery_thread: QThread | None = None
         self._discovery_worker: _ExistingResultScanWorker | None = None
+        self.initial_quality_handle: TaskHandle | None = None
+        self._quality_scan_timer = QTimer(self)
+        self._quality_scan_timer.setInterval(100)
+        self._quality_scan_timer.timeout.connect(self._poll_initial_quality_scan)
         self.page_ids = tuple(page_id for page_id, _ in PAGE_LABELS)
         self._pages: dict[str, QWidget] = {}
 
@@ -388,8 +395,65 @@ class MainWindow(QMainWindow):
         project_page = self._pages.get("project")
         if isinstance(project_page, ProjectPage):
             project_page.set_project(project)
+        self._start_initial_quality_scan_if_needed(project)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
         return True
+
+    def _start_initial_quality_scan_if_needed(self, project: ProjectManager) -> None:
+        self.initial_quality_handle = None
+        imported = project.manifest.get("imported_artifacts")
+        if not isinstance(imported, dict) or not imported.get("pose_2d_files"):
+            return
+        if project.path_for("quality_report").is_file():
+            return
+        request = TaskRequest(
+            str(project.manifest["project_id"]),
+            self.controller.generation,
+            "初始质量扫描",
+            {"project_root": str(project.root)},
+        )
+
+        def work(token):
+            token.raise_if_cancelled()
+            service = QualityAuditService()
+            report = service.analyze(project)
+            token.raise_if_cancelled()
+            service.save(report)
+            return report
+
+        self.initial_quality_handle = self.controller.start_task(request, work)
+        self._quality_scan_timer.start()
+        self.statusBar().showMessage("正在后台生成初始质量报告…")
+
+    @Slot()
+    def _poll_initial_quality_scan(self) -> None:
+        handle = self.initial_quality_handle
+        if handle is None:
+            self._quality_scan_timer.stop()
+            return
+        snapshot = self.controller.supervisor.snapshot(handle.task_id)
+        if snapshot.status not in {"completed", "failed", "cancelled"}:
+            return
+        self._quality_scan_timer.stop()
+        result = handle.wait(0)
+        project = self.project
+        if (
+            project is None
+            or not self.controller.supervisor.accepts_result(
+                result,
+                str(project.manifest["project_id"]),
+                self.controller.generation,
+            )
+        ):
+            return
+        if result.status == "succeeded":
+            for page_id in ("quality_2d", "quality_3d"):
+                page = self._pages.get(page_id)
+                if isinstance(page, (Quality2DPage, Quality3DPage)):
+                    page.set_project(project)
+            self.statusBar().showMessage("初始质量报告已生成")
+        elif result.status == "failed":
+            self.statusBar().showMessage(f"初始质量扫描失败：{result.error}")
 
     def _open_correction_target(self, target: CorrectionTarget) -> bool:
         service = self.quality_correction_service
