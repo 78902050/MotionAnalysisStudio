@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -20,8 +20,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.analysis.comparison import ComparisonMember, ComparisonReport, ComparisonRequest, ComparisonService
+from app.application.controller import ApplicationController
 from app.reporting.export import ReportExporter
 from app.project.manager import ProjectManager
+from app.tasks.base import TaskRequest
+from app.tasks.handle import TaskHandle
 
 from ..layout import make_scrollable_panel
 
@@ -52,9 +55,16 @@ class _ComparisonWorker(QObject):
 
 
 class ComparisonPage(QWidget):
-    def __init__(self, project: ProjectManager | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        project: ProjectManager | None = None,
+        parent: QWidget | None = None,
+        *,
+        controller: ApplicationController | None = None,
+    ) -> None:
         super().__init__(parent)
         self.project = project
+        self.controller = controller
         self._members: tuple[ComparisonMember, ...] = ()
         self._service: ComparisonService | None = None
         self.report: ComparisonReport | None = None
@@ -62,6 +72,15 @@ class ComparisonPage(QWidget):
         self._generation = 0
         self._thread: QThread | None = None
         self._worker: _ComparisonWorker | None = None
+        self._pending_rows = ()
+        self._fill_position = 0
+        self._fill_timer = QTimer(self)
+        self._fill_timer.setInterval(0)
+        self._fill_timer.timeout.connect(self._append_table_chunk)
+        self._export_handle: TaskHandle | None = None
+        self._export_timer = QTimer(self)
+        self._export_timer.setInterval(25)
+        self._export_timer.timeout.connect(self._poll_export)
         self._build_ui()
         if project is not None:
             self.set_project(project)
@@ -148,6 +167,8 @@ class ComparisonPage(QWidget):
 
     def set_project(self, project: ProjectManager | None) -> None:
         self._stop_worker()
+        self._stop_table_fill()
+        self._cancel_export()
         self._generation += 1
         self.project = project
         self._context_id = str(project.manifest.get("project_id", "")) if project else ""
@@ -156,6 +177,7 @@ class ComparisonPage(QWidget):
 
     def set_members(self, members: tuple[ComparisonMember, ...] | list[ComparisonMember]) -> None:
         self._stop_worker()
+        self._stop_table_fill()
         self._generation += 1
         self._members = tuple(members)
         self._service = ComparisonService(self._members)
@@ -240,8 +262,16 @@ class ComparisonPage(QWidget):
             self.status.setText(f"对比报告生成失败：{reason}")
 
     def _fill_table(self, report: ComparisonReport) -> None:
+        self._stop_table_fill()
         self.comparison_table.setRowCount(0)
-        for row_data in report.rows:
+        self._pending_rows = report.rows
+        self._fill_position = 0
+        if self._pending_rows:
+            self._fill_timer.start()
+
+    def _append_table_chunk(self) -> None:
+        end = min(self._fill_position + 100, len(self._pending_rows))
+        for row_data in self._pending_rows[self._fill_position:end]:
             row = self.comparison_table.rowCount()
             self.comparison_table.insertRow(row)
             values = row_data.to_dict()
@@ -258,13 +288,73 @@ class ComparisonPage(QWidget):
             )
             for column, value in enumerate(display):
                 self.comparison_table.setItem(row, column, QTableWidgetItem("—" if value is None else str(value)))
+        self._fill_position = end
+        if self._fill_position >= len(self._pending_rows):
+            self._fill_timer.stop()
+            self._pending_rows = ()
+            self._fill_position = 0
+
+    def _stop_table_fill(self) -> None:
+        self._fill_timer.stop()
+        self._pending_rows = ()
+        self._fill_position = 0
 
     def export_report(self, path: Path, format: str) -> None:
         if self.report is None:
             self.status.setText("请先生成对比报告")
             return
+        if self.controller is not None and self.project is not None and self.controller.current_project is self.project:
+            report = self.report
+            destination = Path(path)
+            request = TaskRequest(
+                str(self.project.manifest["project_id"]),
+                self.controller.generation,
+                "comparison-export",
+                {"path": str(destination), "format": format},
+            )
+
+            def work(token):
+                token.raise_if_cancelled()
+                ReportExporter().export(report, destination, format)
+                token.raise_if_cancelled()
+                return destination
+
+            self._export_handle = self.controller.start_task(request, work)
+            self._export_timer.start()
+            self.status.setText(f"正在后台导出 {format.upper()}…")
+            return
         ReportExporter().export(self.report, Path(path), format)
         self.status.setText(f"已导出 {format.upper()}：{path}")
+
+    def _poll_export(self) -> None:
+        handle = self._export_handle
+        if handle is None:
+            self._export_timer.stop()
+            return
+        try:
+            result = handle.wait(0)
+        except TimeoutError:
+            return
+        self._export_timer.stop()
+        self._export_handle = None
+        if self.project is None:
+            return
+        project_id = str(self.project.manifest.get("project_id", ""))
+        generation = self.controller.generation if self.controller is not None else -1
+        if result.project_id != project_id or result.generation != generation:
+            return
+        if result.status == "succeeded":
+            self.status.setText(f"导出完成：{result.value}")
+        elif result.status == "cancelled":
+            self.status.setText("报告导出已取消")
+        else:
+            self.status.setText(f"报告导出失败：{result.error or result.status}")
+
+    def _cancel_export(self) -> None:
+        if self._export_handle is not None:
+            self._export_handle.cancel()
+        self._export_handle = None
+        self._export_timer.stop()
 
     def _choose_export(self, format: str) -> None:
         if self.report is None:
@@ -295,5 +385,7 @@ class ComparisonPage(QWidget):
 
     def closeEvent(self, event) -> None:
         self._generation += 1
+        self._cancel_export()
+        self._stop_table_fill()
         self._stop_worker()
         event.accept()

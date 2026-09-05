@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -33,10 +34,12 @@ from .pages.calibration_page import CalibrationPage
 from .pages.comparison_page import ComparisonPage
 from .pages.correction_page import CorrectionPage
 from .pages.events_page import EventsPage
+from .pages.media_page import MediaPage
 from .pages.project_page import ProjectPage
 from .pages.quality_2d_page import Quality2DPage
 from .pages.quality_3d_page import Quality3DPage
 from .pages.synchronization_page import SynchronizationPage
+from .pages.settings_page import SettingsPage
 from .pages.tasks_page import TasksPage
 from .style import apply_style
 from .task_center import TaskStatusStrip
@@ -68,16 +71,19 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Motion Analysis Studio")
         self.setMinimumSize(480, 360)
         self.resize(1120, 720)
+        self.settings = QSettings("MotionAnalysisStudio", "MotionAnalysisStudio")
         self.controller = controller or ApplicationController()
         self._correction_rerun_launcher = CorrectionRerunLauncher(self.controller)
         if not self.controller.has_correction_rerun_handler():
             self.controller.set_correction_rerun_handler(self._correction_rerun_launcher)
         self.project: ProjectManager | None = self.controller.current_project
         self.quality_correction_service: QualityCorrectionService | None = None
-        self.frame_provider = MultiViewFrameProvider()
+        cache_capacity = self.settings.value("media/cache_capacity", 20, type=int)
+        self.frame_provider = MultiViewFrameProvider(
+            cache_capacity=max(4, min(512, cache_capacity))
+        )
         self.controller.register_resource(self.frame_provider)
         self.unsaved_changes = False
-        self.settings = QSettings("MotionAnalysisStudio", "MotionAnalysisStudio")
         self.page_ids = tuple(page_id for page_id, _ in PAGE_LABELS)
         self._pages: dict[str, QWidget] = {}
 
@@ -100,6 +106,10 @@ class MainWindow(QMainWindow):
             page = (
                 ProjectPage()
                 if page_id == "project"
+                else MediaPage(controller=self.controller)
+                if page_id == "media"
+                else SettingsPage(settings=self.settings)
+                if page_id == "settings"
                 else TasksPage(self.controller.supervisor)
                 if page_id == "tasks"
                 else CalibrationPage(controller=self.controller)
@@ -116,7 +126,7 @@ class MainWindow(QMainWindow):
                 if page_id == "analysis"
                 else EventsPage()
                 if page_id == "events"
-                else ComparisonPage()
+                else ComparisonPage(controller=self.controller)
                 if page_id == "comparison"
                 else Quality3DPage()
                 if page_id == "quality_3d"
@@ -184,9 +194,26 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(4, 4, 4, 4)
         self.navigation_list = QListWidget()
         self.navigation_list.setObjectName("navigation_list")
-        for page_id, label in PAGE_LABELS:
-            item = QListWidgetItem(label)
+        icon_names = (
+            QStyle.StandardPixmap.SP_DirHomeIcon,
+            QStyle.StandardPixmap.SP_FileIcon,
+            QStyle.StandardPixmap.SP_DialogApplyButton,
+            QStyle.StandardPixmap.SP_BrowserReload,
+            QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            QStyle.StandardPixmap.SP_ArrowRight,
+            QStyle.StandardPixmap.SP_DialogYesButton,
+            QStyle.StandardPixmap.SP_ComputerIcon,
+            QStyle.StandardPixmap.SP_MediaPlay,
+            QStyle.StandardPixmap.SP_MediaSeekForward,
+            QStyle.StandardPixmap.SP_FileDialogContentsView,
+            QStyle.StandardPixmap.SP_MessageBoxInformation,
+            QStyle.StandardPixmap.SP_FileDialogInfoView,
+        )
+        for index, (page_id, label) in enumerate(PAGE_LABELS):
+            item = QListWidgetItem(self.style().standardIcon(icon_names[index]), label)
             item.setData(Qt.ItemDataRole.UserRole, page_id)
+            item.setData(Qt.ItemDataRole.UserRole + 1, label)
+            item.setToolTip(label)
             self.navigation_list.addItem(item)
         self.navigation_list.currentRowChanged.connect(self._navigate_from_row)
         layout.addWidget(self.navigation_list, 1)
@@ -252,12 +279,11 @@ class MainWindow(QMainWindow):
         if self.project is not None and isinstance(page, (Quality2DPage, Quality3DPage)):
             page.set_project(self.project)
         self.page_stack.setCurrentWidget(page)
-        matches = self.navigation_list.findItems(
-            next(label for candidate, label in PAGE_LABELS if candidate == page_id),
-            Qt.MatchFlag.MatchExactly,
-        )
-        if matches:
-            self.navigation_list.setCurrentItem(matches[0])
+        for row in range(self.navigation_list.count()):
+            item = self.navigation_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == page_id:
+                self.navigation_list.setCurrentRow(row)
+                break
         return True
 
     def open_project(
@@ -285,6 +311,9 @@ class MainWindow(QMainWindow):
         calibration_page = self._pages.get("calibration")
         if isinstance(calibration_page, CalibrationPage):
             calibration_page.set_project(project)
+        media_page = self._pages.get("media")
+        if isinstance(media_page, MediaPage):
+            media_page.set_project(project)
         synchronization_page = self._pages.get("synchronization")
         if isinstance(synchronization_page, SynchronizationPage):
             synchronization_page.set_project(project)
@@ -459,17 +488,24 @@ class MainWindow(QMainWindow):
 
     def toggle_navigation(self) -> None:
         collapsed = self.navigation.width() > 60
+        self._apply_navigation_collapsed(collapsed)
+        self.settings.setValue("navigation_collapsed", collapsed)
+
+    def _apply_navigation_collapsed(self, collapsed: bool) -> None:
         self.navigation.setMinimumWidth(48 if collapsed else 180)
         self.navigation.setMaximumWidth(48 if collapsed else 280)
-        self.settings.setValue("navigation_collapsed", collapsed)
+        for row in range(self.navigation_list.count()):
+            item = self.navigation_list.item(row)
+            label = str(item.data(Qt.ItemDataRole.UserRole + 1))
+            item.setText("" if collapsed else label)
+            item.setToolTip(label)
 
     def _restore_layout(self) -> None:
         sizes = self.settings.value("workspace_splitter_sizes")
         if isinstance(sizes, list) and sizes:
             self.workspace_splitter.setSizes([int(size) for size in sizes])
         if self.settings.value("navigation_collapsed", False, type=bool):
-            self.navigation.setMinimumWidth(48)
-            self.navigation.setMaximumWidth(48)
+            self._apply_navigation_collapsed(True)
 
     def closeEvent(self, event) -> None:
         if not self.request_close_with_unsaved_guard():
@@ -479,6 +515,9 @@ class MainWindow(QMainWindow):
         association_page = self._pages.get("association")
         if isinstance(association_page, AssociationPage):
             association_page.close()
+        media_page = self._pages.get("media")
+        if isinstance(media_page, MediaPage):
+            media_page.close()
         analysis_page = self._pages.get("analysis")
         if isinstance(analysis_page, AnalysisPage):
             analysis_page.close()
