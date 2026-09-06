@@ -45,6 +45,7 @@ from .pages.comparison_page import ComparisonPage
 from .pages.correction_page import CorrectionPage
 from .pages.events_page import EventsPage
 from .pages.media_page import MediaPage
+from app.media.video_sources import VideoSourceResolver
 from .pages.pipeline_page import PipelinePage
 from .pages.project_page import ProjectPage
 from .pages.quality_2d_page import Quality2DPage
@@ -393,17 +394,10 @@ class MainWindow(QMainWindow):
             else:
                 correction_page.set_pose_inventory({})
                 correction_page.set_cameras(cameras)
-            videos: dict[str, Path] = {}
-            for record in project.manifest.get("cameras", []):
-                if not isinstance(record, dict):
-                    continue
-                camera_id = record.get("camera_id")
-                path_value = record.get("video_path")
-                if isinstance(camera_id, str) and isinstance(path_value, str) and path_value:
-                    candidate = Path(path_value)
-                    if not candidate.is_absolute():
-                        candidate = project.root / candidate
-                    videos[camera_id] = candidate
+            videos = {
+                camera: source.path
+                for camera, source in VideoSourceResolver.resolve(project).items()
+            }
             self.frame_provider.set_project(str(project.manifest["project_id"]), videos)
         for page_id in ("quality_2d", "quality_3d"):
             quality_page = self._pages.get(page_id)

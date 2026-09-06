@@ -43,6 +43,9 @@ class ExistingResultImporter:
             video = self._video_for(camera, candidate.source_videos)
             if video is not None:
                 record["video_path"] = str(video)
+            pose_video = self._video_for(camera, candidate.derived_videos)
+            if pose_video is not None:
+                record["pose_video_path"] = str(pose_video)
             cameras.append(record)
         project.manifest["cameras"] = cameras
 
@@ -102,4 +105,4 @@ class ExistingResultImporter:
             if path.stem.casefold() == camera.casefold()
             or path.stem.casefold().startswith(f"{camera.casefold()}_")
         ]
-        return matches[0] if matches else None
+        return matches[0] if len(matches) == 1 else None
