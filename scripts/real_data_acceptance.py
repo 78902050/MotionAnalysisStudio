@@ -7,9 +7,12 @@ import json
 import math
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import cv2
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 if str(REPOSITORY_ROOT) not in sys.path:
@@ -21,6 +24,7 @@ from app.analysis.model import MetricConfig, MetricDefinition, Trajectory
 from app.application.quality_correction_service import QualityCorrectionService
 from app.calibration.importer import CalibrationImporter
 from app.application.pipeline_launcher import build_pipeline_commands
+from app.application.controller import ApplicationController
 from app.correction.history import CorrectionHistory
 from app.correction.rerun import CORRECTION_RERUN_STAGES
 from app.correction.session import CorrectionSession
@@ -33,7 +37,76 @@ from app.project.discovery import ExistingResultDiscovery
 from app.project.importer import ExistingResultImporter
 from app.project.manager import ProjectManager
 from app.quality.audit import QualityAuditService
+from app.gui.pages.playback_3d_page import Playback3DPage
+from app.playback.catalog import TrajectoryCatalog
 from app.visualization.skeleton import SkeletonTopologyRepository
+
+
+def _verify_playback(
+    project: ProjectManager,
+    source_root: Path,
+    trc_source: Path,
+    strict_trajectory: Trajectory,
+) -> dict[str, object]:
+    pose3d = project.root / "pose-3d"
+    pose3d.mkdir(parents=True, exist_ok=True)
+    first_frame = strict_trajectory.frames[0]
+    last_frame = strict_trajectory.frames[-1]
+    trc_target = pose3d / f"acceptance_P0_{first_frame}-{last_frame}.trc"
+    shutil.copy2(trc_source, trc_target)
+    c3d_source = next(source_root.rglob("*.c3d"), None)
+    if c3d_source is not None:
+        c3d_target = pose3d / c3d_source.name
+        if c3d_target != trc_target:
+            shutil.copy2(c3d_source, c3d_target)
+
+    sources = TrajectoryCatalog.scan(project.root)
+    if not sources:
+        raise AssertionError("playback catalog did not discover copied TRC/C3D")
+    controller = ApplicationController()
+    if not controller.open_project(project):
+        raise AssertionError(controller.last_error or "playback project did not open")
+    application = QApplication.instance() or QApplication([])
+    page = Playback3DPage(controller=controller)
+    heartbeat_times: list[float] = []
+    heartbeat = QTimer()
+    heartbeat.setInterval(5)
+    heartbeat.timeout.connect(lambda: heartbeat_times.append(time.monotonic()))
+    heartbeat.start()
+    started = time.monotonic()
+    page.set_project(project)
+    while (
+        page.trajectory is None or len(heartbeat_times) < 3
+    ) and time.monotonic() - started < 10.0:
+        application.processEvents()
+        time.sleep(0.001)
+    heartbeat.stop()
+    application.processEvents()
+    if page.trajectory is None:
+        reason = page.status.text()
+        page.close()
+        controller.shutdown(dirty_decision="discard")
+        raise AssertionError(f"playback page did not load trajectory: {reason}")
+    trajectory = page.trajectory
+    edges = SkeletonTopologyRepository().edges_for_labels(trajectory.labels)
+    gaps = [
+        (current - previous) * 1000
+        for previous, current in zip(heartbeat_times, heartbeat_times[1:])
+    ]
+    report = {
+        "source": str(trajectory.source.path),
+        "format": trajectory.source.format,
+        "available_formats": sorted({source.format for source in sources}),
+        "frame_count": len(trajectory.frames),
+        "marker_count": len(trajectory.points),
+        "skeleton_edge_count": len(edges),
+        "diagnostics": [item.code for item in trajectory.diagnostics],
+        "max_heartbeat_gap_ms": max(gaps, default=0.0),
+    }
+    page.close()
+    if not controller.shutdown(dirty_decision="discard"):
+        raise AssertionError(controller.last_error or "playback task did not shut down")
+    return report
 
 
 def _first_valid_calibration(root: Path, importer: CalibrationImporter) -> Path:
@@ -292,6 +365,12 @@ def run_acceptance(source_root: Path, output_root: Path) -> dict[str, object]:
         "correction_rerun_stages": list(CORRECTION_RERUN_STAGES),
         "video_reference": videos[0] if videos else None,
     }
+    result["playback_3d"] = _verify_playback(
+        project,
+        source_root,
+        trc_source,
+        trajectory,
+    )
     result["existing_results"] = _verify_existing_results_trial(
         source_root,
         output_root,

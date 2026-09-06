@@ -29,6 +29,17 @@ class SkeletonTopologyTests(unittest.TestCase):
         edges = SkeletonTopologyRepository().edges_for_labels(HALPE_26_NAMES)
         self.assertIn(("RKnee", "RAnkle"), edges)
 
+    def test_augmented_marker_set_keeps_base_body_edges(self) -> None:
+        augmented = (*HALPE_26_NAMES, *(f"extra-{index}" for index in range(39)))
+        edges = SkeletonTopologyRepository().edges_for_labels(augmented)
+        self.assertIn(("Hip", "LHip"), edges)
+        self.assertIn(("RShoulder", "RElbow"), edges)
+
+    def test_marker_augmented_halpe_without_face_points_keeps_body_edges(self) -> None:
+        body = tuple(name for name in HALPE_26_NAMES if name not in {"LEye", "REye", "LEar", "REar"})
+        edges = SkeletonTopologyRepository().edges_for_labels((*body, "r.ASIS_study"))
+        self.assertEqual(len(edges), 21)
+
 
 if __name__ == "__main__":
     unittest.main()

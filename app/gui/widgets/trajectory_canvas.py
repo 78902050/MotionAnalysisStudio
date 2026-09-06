@@ -64,8 +64,12 @@ class TrajectoryCanvas(QWidget):
         rotated = [
             coordinate
             for series in trajectory.points.values()
-            for point in series
-            if (coordinate := view_coordinates(point, self.view_transform)) is not None
+            if (
+                coordinate := view_coordinates(
+                    series[self.frame_index], self.view_transform
+                )
+            )
+            is not None
         ]
         if not rotated:
             return

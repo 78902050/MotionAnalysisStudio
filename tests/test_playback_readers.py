@@ -1,6 +1,7 @@
 import math
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 import c3d
@@ -31,7 +32,9 @@ def _write_c3d(path: Path) -> None:
     analog = np.empty((0, 0))
     writer.add_frames([(valid, analog), (invalid, analog)])
     with path.open("wb") as handle:
-        writer.write(handle)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r"No analog data found in file\.")
+            writer.write(handle)
 
 
 class PlaybackReaderTests(unittest.TestCase):
@@ -63,13 +66,18 @@ class PlaybackReaderTests(unittest.TestCase):
             _write_c3d(path)
             source = TrajectorySource(path, "c3d", "trial", "P0", "raw")
 
-            trajectory = load_playback_trajectory(source)
+            with warnings.catch_warnings(record=True) as captured:
+                warnings.simplefilter("always")
+                trajectory = load_playback_trajectory(source)
 
             self.assertEqual(tuple(trajectory.points), ("Hip",))
             self.assertEqual(trajectory.coordinate_unit, "mm")
             self.assertEqual(trajectory.points["Hip"][0], (1.0, 2.0, 3.0))
             self.assertTrue(all(math.isnan(value) for value in trajectory.points["Hip"][1]))
             self.assertEqual(len(trajectory.frames), 2)
+            self.assertFalse(
+                any("No analog data found" in str(item.message) for item in captured)
+            )
 
 
 if __name__ == "__main__":

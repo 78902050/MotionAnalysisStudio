@@ -87,6 +87,19 @@ class ExistingResultsAcceptanceTests(unittest.TestCase):
             self.assertTrue(existing["correction_frame_decoded"])
             self.assertGreater(existing["correction_skeleton_edges"], 0)
 
+    def test_existing_trajectory_is_ready_for_native_3d_playback(self) -> None:
+        source = Path("tests/fixtures/real_data").resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            result = run_acceptance(source, Path(directory) / "acceptance")
+
+            playback = result["playback_3d"]
+            self.assertIn(playback["format"], {"trc", "c3d"})
+            self.assertGreater(playback["frame_count"], 1)
+            self.assertGreater(playback["marker_count"], 1)
+            self.assertGreater(playback["skeleton_edge_count"], 1)
+            self.assertIsInstance(playback["diagnostics"], list)
+            self.assertLess(playback["max_heartbeat_gap_ms"], 250)
+
 
 if __name__ == "__main__":
     unittest.main()

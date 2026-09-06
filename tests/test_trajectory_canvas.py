@@ -49,6 +49,23 @@ class TrajectoryCanvasTests(unittest.TestCase):
         self.assertGreater(canvas.view_transform.zoom, 0)
         self.assertFalse(image.isNull())
 
+    def test_fit_all_uses_current_pose_not_whole_trial_translation(self) -> None:
+        trajectory = PlaybackTrajectory(
+            (1, 2),
+            (0.0, 0.1),
+            {
+                "Hip": ((0.0, 0.0, 0.0), (1000.0, 0.0, 0.0)),
+                "Head": ((1.0, 0.0, 1.0), (1001.0, 0.0, 1.0)),
+            },
+            "m",
+            TrajectorySource(Path("trial_P0_1-2.trc"), "trc", "trial", "P0", "raw"),
+        )
+        canvas = TrajectoryCanvas()
+        canvas.resize(400, 300)
+        canvas.set_trajectory(trajectory, (("Hip", "Head"),))
+
+        self.assertGreater(canvas.view_transform.zoom, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

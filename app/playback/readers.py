@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from pathlib import Path
 
 import c3d
@@ -123,30 +124,39 @@ def _load_c3d(source: TrajectorySource) -> PlaybackTrajectory:
     times: list[float] = []
     values: dict[str, list[Point3D]]
     with source.path.open("rb") as handle:
-        reader = c3d.Reader(handle)
-        labels = _unique_labels(reader.point_labels)
-        values = {label: [] for label in labels}
-        rate = float(reader.point_rate)
-        if rate <= 0:
-            raise ValueError(f"C3D point rate must be positive: {source.path}")
-        unit_parameter = reader.get("POINT:UNITS")
-        unit = _normalize_unit(
-            unit_parameter.string_value if unit_parameter is not None else "mm"
-        )
-        first_frame: int | None = None
-        for frame, points, _analog in reader.read_frames(copy=True, check_nan=False):
-            frame = int(frame)
-            if first_frame is None:
-                first_frame = frame
-            frames.append(frame)
-            times.append((frame - first_frame) / rate)
-            for index, label in enumerate(labels):
-                row = points[index]
-                coordinates = tuple(float(value) for value in row[:3])
-                residual = float(row[3])
-                if residual < 0 or not all(math.isfinite(value) for value in coordinates):
-                    coordinates = (float("nan"), float("nan"), float("nan"))
-                values[label].append(coordinates)  # type: ignore[arg-type]
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"No analog data found in file\.",
+                category=UserWarning,
+                module=r"c3d(?:\.c3d)?",
+            )
+            reader = c3d.Reader(handle)
+            labels = _unique_labels(reader.point_labels)
+            values = {label: [] for label in labels}
+            rate = float(reader.point_rate)
+            if rate <= 0:
+                raise ValueError(f"C3D point rate must be positive: {source.path}")
+            unit_parameter = reader.get("POINT:UNITS")
+            unit = _normalize_unit(
+                unit_parameter.string_value if unit_parameter is not None else "mm"
+            )
+            first_frame: int | None = None
+            for frame, points, _analog in reader.read_frames(copy=True, check_nan=False):
+                frame = int(frame)
+                if first_frame is None:
+                    first_frame = frame
+                frames.append(frame)
+                times.append((frame - first_frame) / rate)
+                for index, label in enumerate(labels):
+                    row = points[index]
+                    coordinates = tuple(float(value) for value in row[:3])
+                    residual = float(row[3])
+                    if residual < 0 or not all(
+                        math.isfinite(value) for value in coordinates
+                    ):
+                        coordinates = (float("nan"), float("nan"), float("nan"))
+                    values[label].append(coordinates)  # type: ignore[arg-type]
     return PlaybackTrajectory(
         tuple(frames),
         tuple(times),

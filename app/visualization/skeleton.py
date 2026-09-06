@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from app.adapters.pose2sim.pose2d_repository import HALPE_26_KEYPOINT_NAMES
+
+
+_HALPE_BODY_SIGNATURE = set(HALPE_26_KEYPOINT_NAMES) - {"LEye", "REye", "LEar", "REar"}
+
 
 class SkeletonTopologyRepository:
     def __init__(self) -> None:
@@ -36,6 +41,8 @@ class SkeletonTopologyRepository:
         labels = {str(name).strip() for name in keypoint_names if str(name).strip()}
         if len(labels) < 4:
             return ()
+        if _HALPE_BODY_SIGNATURE.issubset(labels):
+            return self.edges_for("HALPE_26", labels)
         ranked: list[tuple[int, float, object]] = []
         seen_models: set[int] = set()
         for model in self._models.values():
