@@ -207,6 +207,9 @@ class MainWindow(QMainWindow):
             quality_page = self._pages[page_id]
             assert isinstance(quality_page, (Quality2DPage, Quality3DPage))
             quality_page.target_requested.connect(self._open_correction_target)
+        quality_3d_page = self._pages["quality_3d"]
+        assert isinstance(quality_3d_page, Quality3DPage)
+        quality_3d_page.playback_requested.connect(self._open_playback_target)
         self.workspace_splitter = make_resizable_splitter(self.navigation, self.page_stack)
         self.workspace_splitter.setObjectName("workspace_splitter")
         root_layout.addWidget(self.workspace_splitter, 1)
@@ -588,6 +591,15 @@ class MainWindow(QMainWindow):
         if resolution.blocker:
             self.statusBar().showMessage(resolution.blocker)
         return True
+
+    @Slot(str, int)
+    def _open_playback_target(self, person_id: str, frame: int) -> None:
+        playback_page = self._pages.get("playback_3d")
+        if not isinstance(playback_page, Playback3DPage):
+            self.statusBar().showMessage("三维回放页面不可用")
+            return
+        self.navigate("playback_3d")
+        playback_page.open_target(person_id, frame)
 
     @Slot(str, int, int, int)
     def _open_pose_frame(
