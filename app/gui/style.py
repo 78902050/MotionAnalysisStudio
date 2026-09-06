@@ -61,6 +61,19 @@ QStatusBar {
     background: #0d141c;
     color: #aab9c4;
 }
+QFrame#playback_header {
+    background: #122330;
+    border: 1px solid #284353;
+    border-radius: 6px;
+}
+QWidget#trajectory_canvas {
+    border: 1px solid #294555;
+    border-radius: 4px;
+}
+QLabel#playback_diagnostics {
+    color: #9bb0bd;
+    padding-top: 8px;
+}
 """
 
 

@@ -47,6 +47,7 @@ from .pages.events_page import EventsPage
 from .pages.media_page import MediaPage
 from app.media.video_sources import VideoSourceResolver
 from .pages.pipeline_page import PipelinePage
+from .pages.playback_3d_page import Playback3DPage
 from .pages.project_page import ProjectPage
 from .pages.quality_2d_page import Quality2DPage
 from .pages.quality_3d_page import Quality3DPage
@@ -65,6 +66,7 @@ PAGE_LABELS: tuple[tuple[str, str], ...] = (
     ("correction_2d", "二维修正"),
     ("association", "多人关联"),
     ("quality_3d", "三维质检"),
+    ("playback_3d", "三维回放"),
     ("analysis", "运动学"),
     ("events", "事件周期"),
     ("comparison", "对比报告"),
@@ -172,6 +174,8 @@ class MainWindow(QMainWindow):
                 if page_id == "comparison"
                 else Quality3DPage()
                 if page_id == "quality_3d"
+                else Playback3DPage(controller=self.controller, settings=self.settings)
+                if page_id == "playback_3d"
                 else self._build_page(page_id, label)
             )
             self._pages[page_id] = page
@@ -261,6 +265,7 @@ class MainWindow(QMainWindow):
             QStyle.StandardPixmap.SP_DialogYesButton,
             QStyle.StandardPixmap.SP_ComputerIcon,
             QStyle.StandardPixmap.SP_MediaPlay,
+            QStyle.StandardPixmap.SP_MediaPlay,
             QStyle.StandardPixmap.SP_MediaSeekForward,
             QStyle.StandardPixmap.SP_FileDialogContentsView,
             QStyle.StandardPixmap.SP_MediaPlay,
@@ -310,6 +315,7 @@ class MainWindow(QMainWindow):
             "quality_2d": "按相机、帧、人物和关节点查看二维质量问题。",
             "correction_2d": "在可调分栏中确认二维点位，保存前保留可恢复历史。",
             "quality_3d": "查看重投影误差、有效点率、缺失率和覆盖区间。",
+            "playback_3d": "播放已有 TRC/C3D 三维骨架轨迹，检查动作随时间的变化。",
             "calibration": "查看当前标定输入和相机质量诊断。",
             "synchronization": "查看同步帧与原视频帧的映射关系。",
             "association": "诊断人物轨迹、查看候选并人工确认语义关联。",
@@ -410,6 +416,9 @@ class MainWindow(QMainWindow):
         analysis_page = self._pages.get("analysis")
         if isinstance(analysis_page, AnalysisPage):
             analysis_page.set_project(project)
+        playback_page = self._pages.get("playback_3d")
+        if isinstance(playback_page, Playback3DPage):
+            playback_page.set_project(project)
         events_page = self._pages.get("events")
         if isinstance(events_page, EventsPage):
             events_page.set_project(project)
@@ -840,6 +849,9 @@ class MainWindow(QMainWindow):
         analysis_page = self._pages.get("analysis")
         if isinstance(analysis_page, AnalysisPage):
             analysis_page.close()
+        playback_page = self._pages.get("playback_3d")
+        if isinstance(playback_page, Playback3DPage):
+            playback_page.close()
         events_page = self._pages.get("events")
         if isinstance(events_page, EventsPage):
             events_page.close()
