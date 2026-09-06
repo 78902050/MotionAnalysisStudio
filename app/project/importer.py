@@ -18,20 +18,28 @@ class ExistingResultImporter:
         root = candidate.root.resolve()
         manifest_path = root / "manifest.json"
         if manifest_path.is_file():
-            return ProjectManager.open(root)
+            project = ProjectManager.open(root)
+        else:
+            project = ProjectManager.create(root, root.name)
 
-        project = ProjectManager.create(root, root.name)
-        calibration_loaded = False
-        if candidate.calibration_path is not None:
+        active_calibration = project.root / "calibration" / "normalized" / "cameras.json"
+        calibration_loaded = active_calibration.is_file()
+        if candidate.calibration_path is not None and not calibration_loaded:
             try:
                 CalibrationImporter().import_file(project, candidate.calibration_path)
                 calibration_loaded = True
             except (OSError, ValueError):
                 calibration_loaded = False
 
+        existing_cameras = {
+            str(record.get("camera_id")): record
+            for record in project.manifest.get("cameras", [])
+            if isinstance(record, dict) and isinstance(record.get("camera_id"), str)
+        }
         cameras: list[dict[str, object]] = []
         for camera in candidate.cameras:
-            record: dict[str, object] = {"camera_id": camera}
+            record = dict(existing_cameras.get(camera, {}))
+            record["camera_id"] = camera
             video = self._video_for(camera, candidate.source_videos)
             if video is not None:
                 record["video_path"] = str(video)
@@ -58,8 +66,10 @@ class ExistingResultImporter:
         stages = project.manifest["stages"]
         for stage, available in stage_evidence.items():
             if available:
-                stages[stage]["status"] = "completed"
-                stages[stage]["imported"] = True
+                record = stages[stage]
+                if not record.get("imported"):
+                    record["status"] = "completed"
+                record["imported"] = True
 
         imported_at = utc_now()
         artifact_report = {
@@ -93,4 +103,3 @@ class ExistingResultImporter:
             or path.stem.casefold().startswith(f"{camera.casefold()}_")
         ]
         return matches[0] if matches else None
-
