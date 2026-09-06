@@ -16,6 +16,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from app.adapters.pose2sim.pose2d_repository import Pose2DRepository
 from app.analysis.metrics import MetricEngine
 from app.analysis.model import MetricConfig, MetricDefinition, Trajectory
+from app.application.quality_correction_service import QualityCorrectionService
 from app.calibration.importer import CalibrationImporter
 from app.application.pipeline_launcher import build_pipeline_commands
 from app.correction.history import CorrectionHistory
@@ -98,7 +99,7 @@ def _verify_existing_results_trial(
     )
     if source_candidate is None:
         raise FileNotFoundError(f"no processed Pose2Sim trial found under {source_root}")
-    pose_source, camera, _frame, _keypoint_count = _first_valid_pose(source_candidate.root)
+    pose_source, camera, frame, keypoint_count = _first_valid_pose(source_candidate.root)
     trc_source = source_candidate.artifacts.trc[0] if source_candidate.artifacts.trc else fallback_trc
 
     trial = output_root / "registered-trial"
@@ -119,6 +120,16 @@ def _verify_existing_results_trial(
     quality = QualityAuditService()
     report = quality.analyze(project)
     quality.save(report)
+    correction_service = QualityCorrectionService(project)
+    resolution = correction_service.resolve_pose_frame(
+        camera,
+        frame,
+        0,
+        0,
+    )
+    pose_document = correction_service.create_session(resolution).document
+    pose_frame = pose_document.frame_pose()
+    quality_metrics = report.metrics()
     config = ConfigDocument.open(project.path_for("config"))
     config_validation = config.validate(config.text)
     commands = build_pipeline_commands(project.path_for("config"), GENERAL_POSE2SIM_STAGES)
@@ -132,7 +143,14 @@ def _verify_existing_results_trial(
         "cameras": list(copied_candidate.cameras),
         "has_video": copied_candidate.has_video,
         "quality_report": str(project.path_for("quality_report")),
-        "quality_2d_detection_people_count": report.metrics()["2d_detection_people_count"],
+        "quality_2d_detection_people_count": quality_metrics["2d_detection_people_count"],
+        "quality_3d_total_points": quality_metrics["3d_total_points"],
+        "quality_3d_valid_points": quality_metrics["3d_valid_points"],
+        "pose_browser_camera": resolution.edit_target.address.camera,
+        "pose_browser_frame": resolution.raw_frame,
+        "pose_browser_person_count": len(pose_frame.people),
+        "pose_browser_keypoint_count": keypoint_count,
+        "trajectory_count": len(copied_candidate.artifacts.trc),
         "config_valid": config_validation.valid,
         "general_pose2sim_stages": list(GENERAL_POSE2SIM_STAGES),
         "pipeline_command_stages": list(commands),
