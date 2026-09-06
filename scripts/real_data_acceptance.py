@@ -9,11 +9,13 @@ import shutil
 import sys
 from pathlib import Path
 
+import cv2
+
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from app.adapters.pose2sim.pose2d_repository import Pose2DRepository
+from app.adapters.pose2sim.pose2d_repository import Pose2DRepository, inferred_keypoint_schema
 from app.analysis.metrics import MetricEngine
 from app.analysis.model import MetricConfig, MetricDefinition, Trajectory
 from app.application.quality_correction_service import QualityCorrectionService
@@ -31,6 +33,7 @@ from app.project.discovery import ExistingResultDiscovery
 from app.project.importer import ExistingResultImporter
 from app.project.manager import ProjectManager
 from app.quality.audit import QualityAuditService
+from app.visualization.skeleton import SkeletonTopologyRepository
 
 
 def _first_valid_calibration(root: Path, importer: CalibrationImporter) -> Path:
@@ -136,6 +139,23 @@ def _verify_existing_results_trial(
     settings_inspection = CaliscopeSettingsDiagnostic.inspect(
         CaliscopeSettingsDiagnostic.default_path()
     )
+    video_source = ExistingResultImporter._video_for(camera, source_candidate.source_videos)
+    video_kind = "original" if video_source is not None else None
+    if video_source is None:
+        video_source = ExistingResultImporter._video_for(camera, source_candidate.derived_videos)
+        video_kind = "pose2sim_overlay" if video_source is not None else None
+    frame_decoded = False
+    if video_source is not None:
+        capture = cv2.VideoCapture(str(video_source))
+        try:
+            if capture.isOpened():
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frame)
+                frame_decoded, image = capture.read()
+                frame_decoded = bool(frame_decoded and image is not None)
+        finally:
+            capture.release()
+    model_name, keypoint_names = inferred_keypoint_schema(keypoint_count)
+    skeleton_edges = SkeletonTopologyRepository().edges_for(model_name, keypoint_names)
     return {
         "discovered_trial_count": len(candidates),
         "source_trial": str(source_candidate.root),
@@ -161,6 +181,10 @@ def _verify_existing_results_trial(
             "valid": settings_inspection.valid,
             "message": settings_inspection.message,
         },
+        "correction_video_source": str(video_source) if video_source is not None else None,
+        "correction_video_kind": video_kind,
+        "correction_frame_decoded": frame_decoded,
+        "correction_skeleton_edges": len(skeleton_edges),
     }
 
 

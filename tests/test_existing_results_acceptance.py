@@ -2,6 +2,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+import shutil
+
+import cv2
+import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -61,6 +65,27 @@ class ExistingResultsAcceptanceTests(unittest.TestCase):
                 )
             )
             window.close()
+
+    def test_pose2sim_marker_video_is_decoded_when_original_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            shutil.copytree(Path("tests/fixtures/real_data"), source)
+            pose_directory = next(source.rglob("cam01_json")).parent
+            video = pose_directory / "cam01_pose.mp4"
+            writer = cv2.VideoWriter(
+                str(video), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (32, 24)
+            )
+            self.assertTrue(writer.isOpened())
+            writer.write(np.full((24, 32, 3), 90, dtype=np.uint8))
+            writer.release()
+
+            result = run_acceptance(source, root / "acceptance")
+
+            existing = result["existing_results"]
+            self.assertEqual(existing["correction_video_kind"], "pose2sim_overlay")
+            self.assertTrue(existing["correction_frame_decoded"])
+            self.assertGreater(existing["correction_skeleton_edges"], 0)
 
 
 if __name__ == "__main__":
