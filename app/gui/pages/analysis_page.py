@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -35,6 +36,7 @@ class _AnalysisWorker(QObject):
         generation: int,
         trajectory: Trajectory | None,
         project_root: Path | None,
+        trajectory_path: Path | None,
         definitions: tuple[MetricDefinition, ...],
         config: MetricConfig,
     ) -> None:
@@ -43,6 +45,7 @@ class _AnalysisWorker(QObject):
         self.generation = generation
         self.trajectory = trajectory
         self.project_root = project_root
+        self.trajectory_path = trajectory_path
         self.definitions = definitions
         self.config = config
 
@@ -63,9 +66,10 @@ class _AnalysisWorker(QObject):
         if self.project_root is None:
             raise ValueError("未提供轨迹输入")
         candidates = sorted((self.project_root / "pose-3d").glob("*.trc"))
-        if not candidates:
+        path = self.trajectory_path or (candidates[0] if candidates else None)
+        if path is None:
             raise FileNotFoundError(f"未找到 pose-3d TRC 文件：{self.project_root / 'pose-3d'}")
-        return Trajectory.from_trc(candidates[0], coordinate_system="world")
+        return Trajectory.from_trc(path, coordinate_system="world")
 
     @staticmethod
     def _raise_if_interrupted() -> None:
@@ -74,6 +78,8 @@ class _AnalysisWorker(QObject):
 
 
 class AnalysisPage(QWidget):
+    metrics_ready = Signal(object)
+
     def __init__(self, project: ProjectManager | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.project = project
@@ -82,6 +88,7 @@ class AnalysisPage(QWidget):
         self._project_id = ""
         self._thread: QThread | None = None
         self._worker: _AnalysisWorker | None = None
+        self.metric_result: MetricTable | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -98,6 +105,17 @@ class AnalysisPage(QWidget):
         description.setWordWrap(True)
         description.setStyleSheet("color: #aab9c4; font-size: 14px;")
         layout.addWidget(description)
+
+        artifacts = QFormLayout()
+        self.trajectory_selector = QComboBox()
+        self.trajectory_selector.setObjectName("analysis_trajectory_selector")
+        self.trajectory_selector.currentIndexChanged.connect(self._trajectory_selected)
+        self.kinematics_files = QListWidget()
+        self.kinematics_files.setObjectName("analysis_kinematics_files")
+        self.kinematics_files.setMaximumHeight(110)
+        artifacts.addRow("三维 TRC", self.trajectory_selector)
+        artifacts.addRow("已有 MOT/STO", self.kinematics_files)
+        layout.addLayout(artifacts)
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel("采样率 Hz"))
@@ -155,11 +173,37 @@ class AnalysisPage(QWidget):
         self._generation += 1
         self.project = project
         self.trajectory = None
+        self.metric_result = None
         self._project_id = str(project.manifest.get("project_id", "")) if project else ""
         self.metric_table.setRowCount(0)
-        self.input_value.setText("将从项目 pose-3d 目录读取" if project else "—")
+        self.trajectory_selector.clear()
+        self.kinematics_files.clear()
+        if project is not None:
+            for path in sorted((project.root / "pose-3d").glob("*.trc")):
+                self.trajectory_selector.addItem(path.name, str(path.resolve()))
+            for suffix in ("*.mot", "*.sto"):
+                for path in sorted((project.root / "kinematics").glob(suffix)):
+                    self.kinematics_files.addItem(path.name)
+        self.input_value.setText(
+            str(self.trajectory_selector.currentData())
+            if self.trajectory_selector.count()
+            else "—"
+        )
         self.coordinate_value.setText("—")
-        self.status.setText("已打开项目；点击“后台计算”开始" if project else "请先打开项目或提供轨迹")
+        if project is None:
+            self.status.setText("请先打开项目或提供轨迹")
+        elif self.trajectory_selector.count():
+            self.status.setText(
+                f"已读取 {self.trajectory_selector.count()} 个 TRC、"
+                f"{self.kinematics_files.count()} 个 MOT/STO；选择 TRC 后点击“后台计算”"
+            )
+        else:
+            self.status.setText("当前项目未发现 pose-3d TRC 文件")
+
+    def _trajectory_selected(self) -> None:
+        value = self.trajectory_selector.currentData()
+        if isinstance(value, str) and value:
+            self.input_value.setText(value)
 
     def set_trajectory(self, trajectory: Trajectory | None) -> None:
         self._stop_worker()
@@ -213,6 +257,9 @@ class AnalysisPage(QWidget):
             generation,
             self.trajectory,
             self.project.root if self.project else None,
+            Path(str(self.trajectory_selector.currentData()))
+            if self.trajectory is None and self.trajectory_selector.currentData()
+            else None,
             definitions,
             config,
         )
@@ -235,11 +282,13 @@ class AnalysisPage(QWidget):
             self.status.setText("运动学计算返回了无效结果")
             return
         self._fill_table(value)
+        self.metric_result = value
         self.input_value.setText(str(value.metadata.get("input_source") or "内存轨迹"))
         self.coordinate_value.setText(
             f"{value.metadata['coordinate_system']} / {value.metadata['coordinate_unit']} / {value.metadata['sampling_rate_hz']} Hz"
         )
         self.status.setText(f"计算完成：{len(value.columns)} 个指标列，{len(value.frames)} 帧")
+        self.metrics_ready.emit(value)
 
     @Slot(str, int, str)
     def _calculation_failed(self, project_id: str, generation: int, reason: str) -> None:

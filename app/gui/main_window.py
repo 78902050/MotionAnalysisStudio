@@ -1,6 +1,7 @@
 """Resizable desktop shell for the motion-analysis workspace."""
 
 from pathlib import Path
+import re
 
 from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QAction
@@ -21,6 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.application.controller import ApplicationController
+from app.analysis.comparison import ComparisonMember
+from app.analysis.model import MetricTable
 from app.application.correction_rerun_launcher import CorrectionRerunLauncher
 from app.application.pipeline_launcher import PipelineLauncher
 from app.application.quality_correction_service import QualityCorrectionService
@@ -188,6 +191,9 @@ class MainWindow(QMainWindow):
         assert isinstance(pipeline_page, PipelinePage)
         self.controller.register_editor("pose2sim_config", pipeline_page)
         pipeline_page.pipeline_finished.connect(self._pipeline_finished)
+        analysis_page = self._pages["analysis"]
+        assert isinstance(analysis_page, AnalysisPage)
+        analysis_page.metrics_ready.connect(self._analysis_metrics_ready)
         for page_id in ("quality_2d", "quality_3d"):
             quality_page = self._pages[page_id]
             assert isinstance(quality_page, (Quality2DPage, Quality3DPage))
@@ -445,6 +451,27 @@ class MainWindow(QMainWindow):
             if getattr(result, "status", None) == "succeeded"
             else "阶段：流程未完成"
         )
+
+    @Slot(object)
+    def _analysis_metrics_ready(self, table: object) -> None:
+        project = self.project
+        if project is None or not isinstance(table, MetricTable):
+            return
+        events_page = self._pages.get("events")
+        if isinstance(events_page, EventsPage):
+            events_page.set_metric_table(table)
+        source = str(table.metadata.get("input_source") or "")
+        match = re.search(r"(?:^|_)P(\d+)(?:_|$)", Path(source).stem, re.IGNORECASE)
+        person_id = f"P{match.group(1)}" if match is not None else "未命名人物"
+        member = ComparisonMember(
+            str(project.manifest["project_id"]),
+            person_id,
+            str(project.manifest.get("name") or project.root.name),
+            table,
+        )
+        comparison_page = self._pages.get("comparison")
+        if isinstance(comparison_page, ComparisonPage):
+            comparison_page.set_members((member,))
 
     def _start_initial_quality_scan_if_needed(self, project: ProjectManager) -> None:
         self.initial_quality_handle = None
