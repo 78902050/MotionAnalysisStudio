@@ -6,15 +6,46 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
-from PySide6.QtWidgets import QLabel, QPushButton, QTableView, QVBoxLayout, QWidget
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer, Signal
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.application.controller import ApplicationController
+from app.media.bindings import VideoBindingService
+from app.media.video_sources import VideoSourceResolver
 from app.project.manager import ProjectManager
 from app.tasks.base import CancellationToken, TaskRequest
 from app.tasks.handle import TaskHandle
 
 from ..layout import make_scrollable_panel
+
+
+def _declared_source(
+    project: ProjectManager, record: dict[str, object]
+) -> tuple[Path, str] | None:
+    preferred = record.get("preferred_video_kind")
+    fields = (
+        (("pose_video_path", "pose2sim_overlay"), ("video_path", "original"))
+        if preferred == "pose2sim_overlay"
+        else (("video_path", "original"), ("pose_video_path", "pose2sim_overlay"))
+    )
+    for field, kind in fields:
+        value = record.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        path = Path(value)
+        if not path.is_absolute():
+            path = project.root / path
+        return path.resolve(), kind
+    return None
 
 
 @dataclass(frozen=True)
@@ -25,10 +56,19 @@ class MediaRecord:
     resolution: str
     duration_seconds: float | None
     issue: str = ""
+    source_kind: str = ""
+
+    @property
+    def source_label(self) -> str:
+        if self.source_kind == "original":
+            return "原视频"
+        if self.source_kind == "pose2sim_overlay":
+            return "Pose2Sim 二维标记视频"
+        return "未绑定"
 
 
 class MediaTableModel(QAbstractTableModel):
-    HEADERS = ("相机", "视频文件", "帧率", "分辨率", "时长", "映射状态")
+    HEADERS = ("相机", "当前来源", "视频文件", "帧率", "分辨率", "时长", "映射状态")
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -56,6 +96,7 @@ class MediaTableModel(QAbstractTableModel):
         record = self.records[index.row()]
         values = (
             record.camera,
+            record.source_label,
             record.video_path,
             "—" if record.fps is None else f"{record.fps:.3f} fps",
             record.resolution,
@@ -66,6 +107,8 @@ class MediaTableModel(QAbstractTableModel):
 
 
 class MediaPage(QWidget):
+    sources_changed = Signal()
+
     def __init__(
         self,
         project: ProjectManager | None = None,
@@ -99,10 +142,31 @@ class MediaPage(QWidget):
         description.setWordWrap(True)
         description.setStyleSheet("color: #aab9c4; font-size: 14px;")
         layout.addWidget(description)
-        self.refresh_button = QPushButton("后台刷新媒体信息")
+        actions = QHBoxLayout()
+        self.refresh_button = QPushButton("刷新媒体信息")
         self.refresh_button.setObjectName("media_refresh_button")
         self.refresh_button.clicked.connect(lambda: self.scan(force=True))
-        layout.addWidget(self.refresh_button)
+        actions.addWidget(self.refresh_button)
+        self.bind_original_button = QPushButton("绑定原视频")
+        self.bind_original_button.setObjectName("media_bind_original")
+        self.bind_original_button.clicked.connect(lambda: self._choose_and_bind("original"))
+        actions.addWidget(self.bind_original_button)
+        self.bind_pose_button = QPushButton("绑定 Pose2Sim 视频")
+        self.bind_pose_button.setObjectName("media_bind_pose2sim")
+        self.bind_pose_button.clicked.connect(lambda: self._choose_and_bind("pose2sim_overlay"))
+        actions.addWidget(self.bind_pose_button)
+        self.prefer_original_button = QPushButton("优先原视频")
+        self.prefer_original_button.clicked.connect(lambda: self._set_preferred("original"))
+        actions.addWidget(self.prefer_original_button)
+        self.prefer_pose_button = QPushButton("优先标记视频")
+        self.prefer_pose_button.clicked.connect(lambda: self._set_preferred("pose2sim_overlay"))
+        actions.addWidget(self.prefer_pose_button)
+        self.clear_button = QPushButton("清除当前来源")
+        self.clear_button.setObjectName("media_clear_binding")
+        self.clear_button.clicked.connect(self._clear_current)
+        actions.addWidget(self.clear_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
         self.table = QTableView()
         self.table.setObjectName("media_table")
         self.table.setModel(self.model)
@@ -161,6 +225,7 @@ class MediaPage(QWidget):
     @staticmethod
     def _scan_project(project: ProjectManager, token: CancellationToken) -> tuple[MediaRecord, ...]:
         records: list[MediaRecord] = []
+        sources = VideoSourceResolver.resolve(project)
         cameras = project.manifest.get("cameras", [])
         if not isinstance(cameras, list):
             return (MediaRecord("—", "—", None, "—", None, "项目相机清单无效"),)
@@ -169,21 +234,22 @@ class MediaPage(QWidget):
             if not isinstance(value, dict):
                 continue
             camera = str(value.get("camera_id", "")).strip() or "未命名相机"
-            path_value = value.get("video_path")
-            if not isinstance(path_value, str) or not path_value.strip():
-                records.append(MediaRecord(camera, "—", None, "—", None, "未配置视频路径"))
+            source = sources.get(camera)
+            if source is None:
+                declared = _declared_source(project, value)
+                if declared is None:
+                    records.append(MediaRecord(camera, "—", None, "—", None, "未配置视频路径"))
+                else:
+                    path, kind = declared
+                    records.append(
+                        MediaRecord(camera, str(path), None, "—", None, "视频文件不存在", kind)
+                    )
                 continue
-            path = Path(path_value)
-            if not path.is_absolute():
-                path = project.root / path
-            path = path.resolve()
-            if not path.is_file():
-                records.append(MediaRecord(camera, str(path), None, "—", None, "视频文件不存在"))
-                continue
+            path = source.path
             capture = cv2.VideoCapture(str(path))
             try:
                 if not capture.isOpened():
-                    records.append(MediaRecord(camera, str(path), None, "—", None, "视频无法打开"))
+                    records.append(MediaRecord(camera, str(path), None, "—", None, "视频无法打开", source.kind))
                     continue
                 fps = float(capture.get(cv2.CAP_PROP_FPS))
                 frame_count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -192,7 +258,7 @@ class MediaPage(QWidget):
                 valid_fps = fps if fps > 0 else None
                 duration = frame_count / fps if fps > 0 and frame_count >= 0 else None
                 resolution = f"{width} × {height}" if width > 0 and height > 0 else "—"
-                records.append(MediaRecord(camera, str(path), valid_fps, resolution, duration))
+                records.append(MediaRecord(camera, str(path), valid_fps, resolution, duration, "", source.kind))
             finally:
                 capture.release()
         return tuple(records)
@@ -224,6 +290,60 @@ class MediaPage(QWidget):
         self.model.set_records(records)
         issues = sum(bool(record.issue) for record in records)
         self.status.setText(f"已读取 {len(records)} 台相机；映射问题 {issues} 个")
+
+    def _selected_camera(self) -> str | None:
+        index = self.table.currentIndex()
+        if not index.isValid() or index.row() >= len(self.model.records):
+            self.status.setText("请先在表格中选择一台相机")
+            return None
+        return self.model.records[index.row()].camera
+
+    def _choose_and_bind(self, kind: str) -> None:
+        camera = self._selected_camera()
+        if camera is None or self.project is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择原视频" if kind == "original" else "选择 Pose2Sim 二维标记视频",
+            str(self.project.root),
+            "视频文件 (*.mp4 *.avi *.mov *.mkv);;所有文件 (*)",
+        )
+        if not path:
+            return
+        try:
+            VideoBindingService.bind(self.project, camera, Path(path), kind)  # type: ignore[arg-type]
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "视频绑定失败", str(exc))
+            return
+        self.sources_changed.emit()
+        self._scanned_project_id = ""
+        self.scan(force=True)
+
+    def _set_preferred(self, kind: str) -> None:
+        camera = self._selected_camera()
+        if camera is None or self.project is None:
+            return
+        try:
+            VideoBindingService.set_preferred(self.project, camera, kind)  # type: ignore[arg-type]
+        except (ValueError, KeyError) as exc:
+            self.status.setText(str(exc))
+            return
+        self.sources_changed.emit()
+        self._scanned_project_id = ""
+        self.scan(force=True)
+
+    def _clear_current(self) -> None:
+        camera = self._selected_camera()
+        if camera is None or self.project is None:
+            return
+        source = VideoSourceResolver.resolve(self.project).get(camera)
+        if source is None:
+            self.status.setText("所选相机没有可清除的视频来源")
+            return
+        VideoBindingService.clear(self.project, camera, source.kind)
+        self.sources_changed.emit()
+        self._scanned_project_id = ""
+        self.scan(force=True)
 
     def closeEvent(self, event) -> None:
         if self._handle is not None:

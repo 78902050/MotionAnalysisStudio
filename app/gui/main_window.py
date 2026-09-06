@@ -183,6 +183,9 @@ class MainWindow(QMainWindow):
         project_page.scan_parent_requested.connect(self.scan_existing_parent)
         project_page.register_candidate_requested.connect(self.register_existing_candidate)
         project_page.register_all_requested.connect(self.register_all_existing)
+        media_page = self._pages["media"]
+        assert isinstance(media_page, MediaPage)
+        media_page.sources_changed.connect(self._refresh_video_sources)
         correction_page = self._pages["correction_2d"]
         assert isinstance(correction_page, CorrectionPage)
         self.controller.register_editor("correction_2d", correction_page)
@@ -424,6 +427,15 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"已打开项目：{project.root}")
         self._start_initial_quality_scan_if_needed(project)
         return True
+
+    def _refresh_video_sources(self) -> None:
+        if self.project is None:
+            return
+        videos = {
+            camera: source.path
+            for camera, source in VideoSourceResolver.resolve(self.project).items()
+        }
+        self.frame_provider.set_project(str(self.project.manifest["project_id"]), videos)
 
     @Slot(object)
     def _pipeline_finished(self, result: object) -> None:
