@@ -113,6 +113,7 @@ class MainWindow(QMainWindow):
         self.unsaved_changes = False
         self._discovery_thread: QThread | None = None
         self._discovery_worker: _ExistingResultScanWorker | None = None
+        self._scan_started_from_import = False
         self.initial_quality_handle: TaskHandle | None = None
         self._quality_scan_timer = QTimer(self)
         self._quality_scan_timer.setInterval(100)
@@ -579,6 +580,13 @@ class MainWindow(QMainWindow):
         project_page = self._pages.get("project")
         try:
             candidate = ExistingResultDiscovery().discover_one(Path(path))
+        except ValueError:
+            return self.scan_existing_parent(path, from_import_action=True)
+        except OSError as exc:
+            if isinstance(project_page, ProjectPage):
+                project_page.show_error(str(exc))
+            return False
+        try:
             project = ExistingResultImporter().register(candidate)
         except (OSError, ValueError) as exc:
             if isinstance(project_page, ProjectPage):
@@ -586,7 +594,12 @@ class MainWindow(QMainWindow):
             return False
         return self.open_project(project)
 
-    def scan_existing_parent(self, path: Path | str) -> bool:
+    def scan_existing_parent(
+        self,
+        path: Path | str,
+        *,
+        from_import_action: bool = False,
+    ) -> bool:
         project_page = self._pages.get("project")
         if self._discovery_thread is not None and self._discovery_thread.isRunning():
             if isinstance(project_page, ProjectPage):
@@ -605,14 +618,23 @@ class MainWindow(QMainWindow):
         thread.finished.connect(self._existing_scan_thread_finished)
         self._discovery_thread = thread
         self._discovery_worker = worker
+        self._scan_started_from_import = from_import_action
         thread.start()
         return True
 
     @Slot(object)
     def _existing_scan_finished(self, candidates: object) -> None:
         project_page = self._pages.get("project")
+        results = tuple(candidates)
         if isinstance(project_page, ProjectPage):
-            project_page.set_candidates(tuple(candidates))
+            project_page.set_candidates(results)
+            if not results:
+                project_page.show_error("目录及其子目录中未发现 Pose2Sim 已处理结果")
+            elif self._scan_started_from_import:
+                qualifier = "多个" if len(results) > 1 else "1 个"
+                project_page.status.setText(
+                    f"目录包含{qualifier}已处理试次（{len(results)} 个），请选择后登记"
+                )
 
     @Slot(str)
     def _existing_scan_failed(self, reason: str) -> None:
@@ -628,6 +650,7 @@ class MainWindow(QMainWindow):
             self._discovery_thread.deleteLater()
         self._discovery_worker = None
         self._discovery_thread = None
+        self._scan_started_from_import = False
 
     def register_existing_candidate(self, candidate: object) -> bool:
         project_page = self._pages.get("project")
