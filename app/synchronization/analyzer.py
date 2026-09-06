@@ -127,6 +127,43 @@ class SynchronizationAnalyzer:
                 )
         raise KeyError(f"no synchronization mapping for {camera} frame {synchronized_frame}")
 
+    def synchronized_frame(self, camera: str, raw_frame: int) -> int:
+        if not camera.strip():
+            raise ValueError("camera must not be empty")
+        if raw_frame < 0:
+            raise ValueError("raw_frame must be non-negative")
+        candidates: set[int] = set()
+        override = self._overrides.get(camera)
+        if override is not None and override.frame_delta is not None:
+            candidate = raw_frame - override.frame_delta
+            if candidate >= 0:
+                candidates.add(candidate)
+        elif override is not None and override.mapping_path is not None:
+            candidates.update(
+                mapping.target_frame
+                for mapping in self._override_mappings.values()
+                if mapping.camera == camera and mapping.source_frame == raw_frame
+            )
+            for start, end, delta, _source in self._override_offset_ranges.get(camera, []):
+                candidate = raw_frame - delta
+                if candidate >= start and (end is None or candidate <= end):
+                    candidates.add(candidate)
+        else:
+            candidates.update(
+                mapping.target_frame
+                for mapping in self._mappings.values()
+                if mapping.camera == camera and mapping.source_frame == raw_frame
+            )
+            for start, end, delta, _source in self._offset_ranges.get(camera, []):
+                candidate = raw_frame - delta
+                if candidate >= start and (end is None or candidate <= end):
+                    candidates.add(candidate)
+        if not candidates:
+            raise KeyError(f"no synchronization mapping for {camera} raw frame {raw_frame}")
+        if len(candidates) > 1:
+            raise ValueError(f"multiple synchronized frames map to {camera} raw frame {raw_frame}")
+        return next(iter(candidates))
+
     def _read_frame_mappings(self, records: object, path: Path, issues: list[SynchronizationIssue]) -> None:
         if records is None:
             return

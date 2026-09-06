@@ -81,6 +81,29 @@ class QualityCorrectionService:
             addresses[camera] = FrameAddress(camera, "raw", mapping.source_frame)
         return addresses, failures
 
+    def linked_raw_view_addresses(
+        self,
+        reference_camera: str,
+        reference_raw_frame: int,
+        cameras: tuple[str, ...] | list[str],
+    ) -> tuple[dict[str, FrameAddress], dict[str, str], int | None]:
+        try:
+            synchronized_frame = self.synchronization.synchronized_frame(
+                reference_camera,
+                reference_raw_frame,
+            )
+        except (KeyError, ValueError):
+            return (
+                {
+                    camera: FrameAddress(camera, "raw", reference_raw_frame)
+                    for camera in cameras
+                },
+                {},
+                None,
+            )
+        addresses, failures = self.raw_view_addresses(synchronized_frame, cameras)
+        return addresses, failures, synchronized_frame
+
     def resolve_target(
         self,
         target: CorrectionTarget,

@@ -249,6 +249,33 @@ class QualityCorrectionWorkflowTests(unittest.TestCase):
             self.assertEqual(addresses["camB"], FrameAddress("camB", "raw", 9))
             self.assertEqual(failures, {})
 
+    def test_raw_browse_frame_links_every_camera_through_synchronization(self) -> None:
+        from app.application.quality_correction_service import QualityCorrectionService
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = self._project(Path(directory))
+            project.manifest["cameras"].append({"camera_id": "camB"})
+            project.save_manifest()
+            _write_json(
+                project.root / "synchronization" / "mapping.json",
+                {
+                    "offsets": [
+                        {"camera": "camA", "frame_delta": 2, "source": "cam-a-map"},
+                        {"camera": "camB", "frame_delta": -1, "source": "cam-b-map"},
+                    ]
+                },
+            )
+            service = QualityCorrectionService(project)
+            method = getattr(service, "linked_raw_view_addresses", None)
+            self.assertIsNotNone(method)
+
+            addresses, failures, synchronized_frame = method("camA", 12, ("camA", "camB"))
+
+            self.assertEqual(synchronized_frame, 10)
+            self.assertEqual(addresses["camA"], FrameAddress("camA", "raw", 12))
+            self.assertEqual(addresses["camB"], FrameAddress("camB", "raw", 9))
+            self.assertEqual(failures, {})
+
 
 if __name__ == "__main__":
     unittest.main()

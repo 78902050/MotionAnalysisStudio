@@ -89,6 +89,22 @@ def _verify_playback(
         raise AssertionError(f"playback page did not load trajectory: {reason}")
     trajectory = page.trajectory
     edges = SkeletonTopologyRepository().edges_for_labels(trajectory.labels)
+    playback_frame = min(len(trajectory.frames) - 1, 45)
+    page.set_frame_index(playback_frame)
+    page.canvas.set_trail_frames(min(45, playback_frame))
+    page.canvas.set_ghost_poses_enabled(True)
+    ghost_indices = page.canvas.ghost_frame_indices()
+    ghost_world_displacement = 0.0
+    if ghost_indices:
+        first_ghost = ghost_indices[0]
+        for series in trajectory.points.values():
+            before = series[first_ghost]
+            current = series[playback_frame]
+            if all(math.isfinite(value) for value in (*before, *current)):
+                ghost_world_displacement = max(
+                    ghost_world_displacement,
+                    math.dist(before, current),
+                )
     gaps = [
         (current - previous) * 1000
         for previous, current in zip(heartbeat_times, heartbeat_times[1:])
@@ -100,6 +116,8 @@ def _verify_playback(
         "frame_count": len(trajectory.frames),
         "marker_count": len(trajectory.points),
         "skeleton_edge_count": len(edges),
+        "ghost_frame_count": len(ghost_indices),
+        "ghost_world_displacement": ghost_world_displacement,
         "diagnostics": [item.code for item in trajectory.diagnostics],
         "max_heartbeat_gap_ms": max(gaps, default=0.0),
     }
@@ -229,9 +247,16 @@ def _verify_existing_results_trial(
             capture.release()
     model_name, keypoint_names = inferred_keypoint_schema(keypoint_count)
     skeleton_edges = SkeletonTopologyRepository().edges_for(model_name, keypoint_names)
+    source_videos = (*source_candidate.source_videos, *source_candidate.derived_videos)
+    source_video_camera_count = sum(
+        ExistingResultImporter._video_for(source_camera, source_videos) is not None
+        for source_camera in source_candidate.cameras
+    )
     return {
         "discovered_trial_count": len(candidates),
         "source_trial": str(source_candidate.root),
+        "source_camera_count": len(source_candidate.cameras),
+        "source_video_camera_count": source_video_camera_count,
         "registered_root": str(project.root),
         "cameras": list(copied_candidate.cameras),
         "has_video": copied_candidate.has_video,

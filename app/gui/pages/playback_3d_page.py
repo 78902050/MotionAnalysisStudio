@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -162,10 +163,45 @@ class Playback3DPage(QWidget):
                 lambda _checked=False, y=yaw, p=pitch: self.canvas.set_view(y, p)
             )
             view_row.addWidget(button)
-        fit_button = QPushButton("适应全部")
+        direction_pad = QFrame()
+        direction_pad.setObjectName("playback_direction_pad")
+        direction_layout = QGridLayout(direction_pad)
+        direction_layout.setContentsMargins(4, 2, 4, 2)
+        direction_layout.setHorizontalSpacing(3)
+        direction_layout.setVerticalSpacing(3)
+        angle = math.pi / 12
+        for label, object_name, row, column, yaw_delta, pitch_delta, tooltip in (
+            ("↑", "playback_rotate_up", 0, 1, 0.0, angle, "视角向上旋转 15°"),
+            ("←", "playback_rotate_left", 1, 0, -angle, 0.0, "视角向左旋转 15°"),
+            ("·", "playback_rotate_reset", 1, 1, 0.0, 0.0, "恢复默认观察角度"),
+            ("→", "playback_rotate_right", 1, 2, angle, 0.0, "视角向右旋转 15°"),
+            ("↓", "playback_rotate_down", 2, 1, 0.0, -angle, "视角向下旋转 15°"),
+        ):
+            button = QPushButton(label)
+            button.setObjectName(object_name)
+            button.setToolTip(tooltip)
+            button.setFixedSize(32, 26)
+            if object_name == "playback_rotate_reset":
+                button.clicked.connect(lambda: self.canvas.set_view(-0.35, -0.20))
+            else:
+                button.clicked.connect(
+                    lambda _checked=False, y=yaw_delta, p=pitch_delta: self.canvas.rotate_by(y, p)
+                )
+            direction_layout.addWidget(button, row, column)
+        view_row.addWidget(direction_pad)
+        fit_button = QPushButton("适应当前")
         fit_button.clicked.connect(self.canvas.fit_all)
         view_row.addWidget(fit_button)
-        view_row.addWidget(QLabel("轨迹长度"))
+        fit_ghosts_button = QPushButton("适应残影")
+        fit_ghosts_button.setObjectName("playback_fit_ghosts")
+        fit_ghosts_button.clicked.connect(self.canvas.fit_motion_window)
+        view_row.addWidget(fit_ghosts_button)
+        self.ghost_checkbox = QCheckBox("骨架残影")
+        self.ghost_checkbox.setObjectName("playback_ghost_poses")
+        self.ghost_checkbox.setChecked(True)
+        self.ghost_checkbox.toggled.connect(self.canvas.set_ghost_poses_enabled)
+        view_row.addWidget(self.ghost_checkbox)
+        view_row.addWidget(QLabel("残影范围"))
         self.trail_spin = QSpinBox()
         self.trail_spin.setRange(0, 120)
         self.trail_spin.setValue(45)
@@ -402,6 +438,7 @@ class Playback3DPage(QWidget):
     def _persist_layout(self) -> None:
         self.settings.setValue("playback3d/splitter_sizes", self.workspace_splitter.sizes())
         self.settings.setValue("playback3d/trail_frames", self.trail_spin.value())
+        self.settings.setValue("playback3d/ghost_poses", self.ghost_checkbox.isChecked())
 
     def _restore_layout(self) -> None:
         sizes = self.settings.value("playback3d/splitter_sizes")
@@ -409,6 +446,8 @@ class Playback3DPage(QWidget):
             self.workspace_splitter.setSizes([int(value) for value in sizes])
         trail = self.settings.value("playback3d/trail_frames", 45, type=int)
         self.trail_spin.setValue(min(120, max(0, trail)))
+        ghosts = self.settings.value("playback3d/ghost_poses", True, type=bool)
+        self.ghost_checkbox.setChecked(bool(ghosts))
 
     def closeEvent(self, event) -> None:
         self._persist_layout()

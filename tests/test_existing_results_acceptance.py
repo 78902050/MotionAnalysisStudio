@@ -32,6 +32,9 @@ class ExistingResultsAcceptanceTests(unittest.TestCase):
 
             existing = result["existing_results"]
             self.assertGreaterEqual(existing["discovered_trial_count"], 1)
+            self.assertIn("source_camera_count", existing)
+            self.assertGreaterEqual(existing["source_camera_count"], 1)
+            self.assertIn("source_video_camera_count", existing)
             self.assertFalse(existing["has_video"])
             self.assertGreater(existing["quality_2d_detection_people_count"], 0)
             self.assertGreater(existing["quality_3d_total_points"], 0)
@@ -97,6 +100,10 @@ class ExistingResultsAcceptanceTests(unittest.TestCase):
             self.assertGreater(playback["frame_count"], 1)
             self.assertGreater(playback["marker_count"], 1)
             self.assertGreater(playback["skeleton_edge_count"], 1)
+            self.assertIn("ghost_frame_count", playback)
+            self.assertGreater(playback["ghost_frame_count"], 0)
+            self.assertIn("ghost_world_displacement", playback)
+            self.assertGreater(playback["ghost_world_displacement"], 0)
             self.assertIsInstance(playback["diagnostics"], list)
             self.assertLess(playback["max_heartbeat_gap_ms"], 250)
 

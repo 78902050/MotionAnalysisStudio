@@ -3,7 +3,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtWidgets import QApplication, QScrollArea, QSplitter
 
 from app.gui.pages.correction_page import CorrectionPage
@@ -104,6 +104,55 @@ class CorrectionPageTests(unittest.TestCase):
         self.assertEqual(page._view_cards[0].property("camera"), "cam03")
         self.assertEqual(page.settings.value("correction/selected_camera"), "cam03")
         page.close()
+
+    def test_four_camera_mode_uses_two_rows_and_keeps_every_view_visible(self) -> None:
+        page = CorrectionPage()
+        page.resize(1120, 720)
+        page.set_cameras(["cam01", "cam02", "cam03", "cam04"])
+        page.camera_selector.setCurrentText("cam01")
+        page.set_view_count(4)
+        page.show()
+        self.application.processEvents()
+
+        self.assertTrue(all(card.isVisible() for card in page._view_cards))
+        self.assertEqual(
+            [card.property("camera") for card in page._view_cards],
+            ["cam01", "cam02", "cam03", "cam04"],
+        )
+        self.assertLess(
+            page._view_cards[0].mapTo(page, QPoint()).y(),
+            page._view_cards[2].mapTo(page, QPoint()).y(),
+        )
+        self.assertLess(
+            page._view_cards[1].mapTo(page, QPoint()).y(),
+            page._view_cards[3].mapTo(page, QPoint()).y(),
+        )
+        page.close()
+
+    def test_dragging_a_camera_row_splitter_persists_custom_view_sizes(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings = QSettings(
+                f"{directory}/layout.ini",
+                QSettings.Format.IniFormat,
+            )
+            page = CorrectionPage(settings=settings)
+            page.resize(1120, 720)
+            page.set_view_count(4)
+            page.show()
+            self.application.processEvents()
+
+            row = page._view_row_splitters[0]
+            row.setSizes([320, 180])
+            row.splitterMoved.emit(320, 1)
+            settings.sync()
+
+            self.assertEqual(
+                settings.value("correction/view_top_sizes"),
+                row.sizes(),
+            )
+            page.close()
 
     def test_frame_buttons_and_timeline_emit_synchronized_frame_requests(self) -> None:
         page = CorrectionPage()

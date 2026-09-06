@@ -62,6 +62,28 @@ class Playback3DPageTests(unittest.TestCase):
         self.assertGreater(page.canvas.width(), 0)
         page.close()
 
+    def test_direction_pad_rotates_view_and_ghost_toggle_controls_canvas(self) -> None:
+        page = Playback3DPage()
+        left = page.findChild(object, "playback_rotate_left")
+        up = page.findChild(object, "playback_rotate_up")
+        ghost = page.findChild(object, "playback_ghost_poses")
+        fit_ghosts = page.findChild(object, "playback_fit_ghosts")
+        self.assertIsNotNone(left)
+        self.assertIsNotNone(up)
+        self.assertIsNotNone(ghost)
+        self.assertIsNotNone(fit_ghosts)
+        before_yaw = page.canvas.view_transform.yaw
+        before_pitch = page.canvas.view_transform.pitch
+
+        left.click()
+        up.click()
+        ghost.setChecked(False)
+
+        self.assertLess(page.canvas.view_transform.yaw, before_yaw)
+        self.assertGreater(page.canvas.view_transform.pitch, before_pitch)
+        self.assertFalse(page.canvas.ghost_poses_enabled)
+        page.close()
+
 
 if __name__ == "__main__":
     unittest.main()

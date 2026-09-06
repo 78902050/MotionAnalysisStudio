@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QWidget
 
 from app.playback.model import PlaybackTrajectory, Point3D
 from app.playback.projection import ViewTransform, project_points, view_coordinates
+from app.visualization.skeleton import keypoint_side, skeleton_edge_side
 
 
 class TrajectoryCanvas(QWidget):
@@ -22,6 +23,8 @@ class TrajectoryCanvas(QWidget):
         self.edges: tuple[tuple[str, str], ...] = ()
         self.frame_index = 0
         self.trail_frames = 45
+        self.ghost_poses_enabled = True
+        self.max_ghost_poses = 8
         self.view_transform = ViewTransform(yaw=-0.35, pitch=-0.20)
         self.selected_label = ""
         self._last_mouse: QPointF | None = None
@@ -53,22 +56,65 @@ class TrajectoryCanvas(QWidget):
         self.trail_frames = min(120, max(0, int(count)))
         self.update()
 
+    def set_ghost_poses_enabled(self, enabled: bool) -> None:
+        self.ghost_poses_enabled = bool(enabled)
+        self.update()
+
     def set_view(self, yaw: float, pitch: float) -> None:
         self.view_transform = replace(self.view_transform, yaw=float(yaw), pitch=float(pitch))
         self.fit_all()
 
+    def rotate_by(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0) -> None:
+        before = self._current_pose_screen_center(self.view_transform)
+        yaw = self.view_transform.yaw + float(yaw_delta)
+        yaw = (yaw + math.pi) % (2 * math.pi) - math.pi
+        pitch = min(
+            math.pi / 2,
+            max(-math.pi / 2, self.view_transform.pitch + float(pitch_delta)),
+        )
+        updated = replace(self.view_transform, yaw=yaw, pitch=pitch)
+        after = self._current_pose_screen_center(updated)
+        if before is not None and after is not None:
+            updated = replace(
+                updated,
+                pan_x=updated.pan_x + before.x() - after.x(),
+                pan_y=updated.pan_y + before.y() - after.y(),
+            )
+        self.view_transform = updated
+        self.update()
+
+    def _current_pose_screen_center(self, transform: ViewTransform) -> QPointF | None:
+        trajectory = self.trajectory
+        if trajectory is None:
+            return None
+        current = {
+            label: series[self.frame_index]
+            for label, series in trajectory.points.items()
+        }
+        projected = project_points(current, transform, (self.width(), self.height()))
+        points = [point for point in projected.values() if point is not None]
+        if not points:
+            return None
+        return QPointF(
+            sum(point.x() for point in points) / len(points),
+            sum(point.y() for point in points) / len(points),
+        )
+
     def fit_all(self) -> None:
+        self._fit_frames((self.frame_index,))
+
+    def fit_motion_window(self) -> None:
+        self._fit_frames((*self.ghost_frame_indices(), self.frame_index))
+
+    def _fit_frames(self, frame_indices: tuple[int, ...]) -> None:
         trajectory = self.trajectory
         if trajectory is None:
             return
         rotated = [
             coordinate
+            for frame_index in dict.fromkeys(frame_indices)
             for series in trajectory.points.values()
-            if (
-                coordinate := view_coordinates(
-                    series[self.frame_index], self.view_transform
-                )
-            )
+            if (coordinate := view_coordinates(series[frame_index], self.view_transform))
             is not None
         ]
         if not rotated:
@@ -106,6 +152,23 @@ class TrajectoryCanvas(QWidget):
             for index in range(start + 1, self.frame_index + 1)
         )
 
+    def ghost_frame_indices(self) -> tuple[int, ...]:
+        if (
+            not self.ghost_poses_enabled
+            or self.trail_frames <= 0
+            or self.frame_index <= 0
+        ):
+            return ()
+        start = max(0, self.frame_index - self.trail_frames)
+        available = list(range(start, self.frame_index))
+        if len(available) <= self.max_ghost_poses:
+            return tuple(available)
+        last = len(available) - 1
+        return tuple(
+            available[round(index * last / (self.max_ghost_poses - 1))]
+            for index in range(self.max_ghost_poses)
+        )
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -121,12 +184,13 @@ class TrajectoryCanvas(QWidget):
             for label, series in trajectory.points.items()
         }
         projected = project_points(current, self.view_transform, (self.width(), self.height()))
+        self._draw_ghost_poses(painter, trajectory)
         self._draw_trails(painter, trajectory)
-        painter.setPen(QPen(QColor(86, 221, 205, 220), 2.4))
         for left, right in self.edges:
             start = projected.get(left)
             end = projected.get(right)
             if start is not None and end is not None:
+                painter.setPen(QPen(self._side_color(skeleton_edge_side((left, right))), 2.4))
                 painter.drawLine(start, end)
         for label, point in projected.items():
             if point is None:
@@ -138,6 +202,51 @@ class TrajectoryCanvas(QWidget):
             painter.drawEllipse(point, radius, radius)
         painter.setPen(QColor("#91a7b5"))
         painter.drawText(12, 22, f"帧 {trajectory.frames[self.frame_index]}  ·  {trajectory.coordinate_unit}")
+
+    def _draw_ghost_poses(
+        self,
+        painter: QPainter,
+        trajectory: PlaybackTrajectory,
+    ) -> None:
+        indices = self.ghost_frame_indices()
+        for ordinal, frame_index in enumerate(indices, start=1):
+            alpha = 22 + round(78 * ordinal / max(1, len(indices)))
+            pose = {
+                label: series[frame_index]
+                for label, series in trajectory.points.items()
+            }
+            projected = project_points(
+                pose,
+                self.view_transform,
+                (self.width(), self.height()),
+            )
+            for left, right in self.edges:
+                start = projected.get(left)
+                end = projected.get(right)
+                if start is None or end is None:
+                    continue
+                color = self._side_color(skeleton_edge_side((left, right)))
+                color.setAlpha(alpha)
+                painter.setPen(QPen(color, 1.5))
+                painter.drawLine(start, end)
+            for label, point in projected.items():
+                if point is None:
+                    continue
+                color = self._side_color(keypoint_side(label))
+                color.setAlpha(alpha)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(color)
+                painter.drawEllipse(point, 2, 2)
+
+    @staticmethod
+    def _side_color(side: str) -> QColor:
+        return QColor(
+            {
+                "left": "#4da3ff",
+                "right": "#ff8a4c",
+                "center": "#56ddcd",
+            }.get(side, "#56ddcd")
+        )
 
     def _draw_grid(self, painter: QPainter) -> None:
         painter.setPen(QPen(QColor(35, 57, 70, 150), 1))

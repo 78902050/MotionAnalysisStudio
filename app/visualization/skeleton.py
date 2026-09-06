@@ -10,6 +10,25 @@ from app.adapters.pose2sim.pose2d_repository import HALPE_26_KEYPOINT_NAMES
 _HALPE_BODY_SIGNATURE = set(HALPE_26_KEYPOINT_NAMES) - {"LEye", "REye", "LEar", "REar"}
 
 
+def keypoint_side(name: str) -> str:
+    value = str(name).strip()
+    folded = value.casefold()
+    if folded.startswith(("left", "l_")) or (
+        len(value) > 1 and value[0] == "L" and value[1].isupper()
+    ):
+        return "left"
+    if folded.startswith(("right", "r_")) or (
+        len(value) > 1 and value[0] == "R" and value[1].isupper()
+    ):
+        return "right"
+    return "center"
+
+
+def skeleton_edge_side(edge: tuple[str, str]) -> str:
+    sides = {keypoint_side(name) for name in edge} - {"center"}
+    return next(iter(sides)) if len(sides) == 1 else "center"
+
+
 class SkeletonTopologyRepository:
     def __init__(self) -> None:
         self._models = self._load_models()

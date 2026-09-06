@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from app.domain.addresses import CorrectionTarget
 from app.application.dirty_state import DirtyState
-from app.visualization.skeleton import SkeletonTopologyRepository
+from app.visualization.skeleton import SkeletonTopologyRepository, skeleton_edge_side
 
 from ..layout import make_resizable_splitter, make_scrollable_panel
 
@@ -51,6 +51,9 @@ class CorrectionCanvas(QWidget):
         self._explicit_extent = False
         self._zoom = 1.0
         self._dragging_point = False
+        self._panning = False
+        self._last_mouse: QPointF | None = None
+        self._pan = QPointF()
         self.setMinimumSize(120, 100)
         self.setMouseTracking(True)
 
@@ -144,6 +147,9 @@ class CorrectionCanvas(QWidget):
         self._explicit_extent = False
         self._zoom = 1.0
         self._dragging_point = False
+        self._panning = False
+        self._last_mouse = None
+        self._pan = QPointF()
         self.update()
 
     def paintEvent(self, _event) -> None:
@@ -157,10 +163,15 @@ class CorrectionCanvas(QWidget):
             painter.setPen(QPen(QColor("#2a3b49"), 1))
             painter.drawRect(target)
         if not target.isEmpty():
-            painter.setPen(QPen(QColor(117, 215, 199, 190), 2))
+            edge_colors = {
+                "left": QColor("#4da3ff"),
+                "right": QColor("#ff8a4c"),
+                "center": QColor("#75d7c7"),
+            }
             for edge in self._edges:
                 if not self._edge_is_visible(edge):
                     continue
+                painter.setPen(QPen(edge_colors[skeleton_edge_side(edge)], 2.4))
                 left = self._points[edge[0]]
                 right = self._points[edge[1]]
                 painter.drawLine(
@@ -191,14 +202,17 @@ class CorrectionCanvas(QWidget):
         return True
 
     def mousePressEvent(self, event) -> None:
-        if (
-            event.button() == Qt.MouseButton.LeftButton
-            and self._selected_point is not None
-            and self.has_coordinate_space
-        ):
+        self._dragging_point = False
+        if event.button() == Qt.MouseButton.LeftButton and self._selected_point is not None and self.has_coordinate_space:
             selected = self._image_to_widget(self._selected_point)
             delta = event.position() - selected
             self._dragging_point = delta.x() ** 2 + delta.y() ** 2 <= 16 ** 2
+        if not self._dragging_point and event.button() in {
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.MiddleButton,
+        }:
+            self._panning = True
+            self._last_mouse = event.position()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
@@ -209,15 +223,31 @@ class CorrectionCanvas(QWidget):
             y = min(max(point.y(), 0.0), max(0.0, height - 1.0))
             self.set_selected_point(x, y)
             self.point_moved.emit(x, y)
+        elif self._panning and self._last_mouse is not None:
+            self._pan += event.position() - self._last_mouse
+            self._last_mouse = event.position()
+            self.update()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() in {Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton}:
             self._dragging_point = False
+            self._panning = False
+            self._last_mouse = None
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event) -> None:
-        self._zoom = min(8.0, max(0.25, self._zoom * (1.15 if event.angleDelta().y() > 0 else 1 / 1.15)))
+        anchor = event.position()
+        image_point = self._widget_to_image(anchor) if self.has_coordinate_space else None
+        self._zoom = min(
+            8.0,
+            max(
+                0.25,
+                self._zoom * (1.15 if event.angleDelta().y() > 0 else 1 / 1.15),
+            ),
+        )
+        if image_point is not None:
+            self._pan += anchor - self._image_to_widget(image_point)
         self.update()
         event.accept()
 
@@ -228,7 +258,12 @@ class CorrectionCanvas(QWidget):
         scale = min(self.width() / data_width, self.height() / data_height) * self._zoom
         width = data_width * scale
         height = data_height * scale
-        return QRectF((self.width() - width) / 2, (self.height() - height) / 2, width, height)
+        return QRectF(
+            (self.width() - width) / 2 + self._pan.x(),
+            (self.height() - height) / 2 + self._pan.y(),
+            width,
+            height,
+        )
 
     def _image_to_widget(self, point: QPointF) -> QPointF:
         target = self._image_rect()
@@ -277,6 +312,7 @@ class CorrectionPage(QWidget):
         self._view_cards: list[QFrame] = []
         self._view_labels: list[QLabel] = []
         self._canvases: list[CorrectionCanvas] = []
+        self._view_row_splitters: list[QSplitter] = []
         self._expected_frames: dict[str, int] = {}
         self._camera_names: list[str] = []
         self._camera_extents: dict[str, tuple[int, int]] = {}
@@ -310,6 +346,8 @@ class CorrectionPage(QWidget):
         self._restore_layout()
         self.workspace_splitter.splitterMoved.connect(lambda *_: self.persist_layout())
         self.views_splitter.splitterMoved.connect(lambda *_: self.persist_layout())
+        for row in self._view_row_splitters:
+            row.splitterMoved.connect(lambda *_: self.persist_layout())
 
     def _build_header(self) -> QFrame:
         header = QFrame()
@@ -388,10 +426,17 @@ class CorrectionPage(QWidget):
         controls.addWidget(self.view_hint)
         layout.addLayout(controls)
 
-        self.views_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.views_splitter = QSplitter(Qt.Orientation.Vertical)
         self.views_splitter.setObjectName("correction_views_splitter")
         self.views_splitter.setChildrenCollapsible(False)
         self.views_splitter.setHandleWidth(5)
+        for row_index in range(2):
+            row = QSplitter(Qt.Orientation.Horizontal)
+            row.setObjectName(f"correction_view_row_{row_index + 1}")
+            row.setChildrenCollapsible(False)
+            row.setHandleWidth(5)
+            self.views_splitter.addWidget(row)
+            self._view_row_splitters.append(row)
         for index in range(4):
             card = QFrame()
             card.setObjectName(f"correction_view_{index + 1}")
@@ -411,13 +456,12 @@ class CorrectionPage(QWidget):
             )
             card_layout.addWidget(label)
             card_layout.addWidget(canvas, 1)
-            self.views_splitter.addWidget(card)
+            self._view_row_splitters[index // 2].addWidget(card)
             self._view_cards.append(card)
             self._view_labels.append(label)
             self._canvases.append(canvas)
         layout.addWidget(self.views_splitter, 1)
-        for index, card in enumerate(self._view_cards):
-            card.setVisible(index < 2)
+        self._apply_view_layout(2)
         return panel
 
     def _build_details_panel(self) -> QScrollArea:
@@ -540,11 +584,20 @@ class CorrectionPage(QWidget):
         count = int(count)
         if count not in {1, 2, 4}:
             raise ValueError("view count must be 1, 2 or 4")
-        for index, card in enumerate(self._view_cards):
-            card.setVisible(index < count)
+        self._apply_view_layout(count)
         self.settings.setValue("correction/view_count", count)
         if self._view_addresses or self._view_failures:
             self._request_visible_frames()
+
+    def _apply_view_layout(self, count: int) -> None:
+        for index, card in enumerate(self._view_cards):
+            card.setVisible(index < count)
+        if self._view_row_splitters:
+            self._view_row_splitters[0].setVisible(count >= 1)
+            self._view_row_splitters[1].setVisible(count == 4)
+            self.views_splitter.setSizes([1, 1] if count == 4 else [1, 0])
+            self._view_row_splitters[0].setSizes([1, 1] if count >= 2 else [1, 0])
+            self._view_row_splitters[1].setSizes([1, 1])
 
     def set_timeline_range(self, first_frame: int, last_frame: int) -> None:
         first = max(0, int(first_frame))
@@ -957,6 +1010,9 @@ class CorrectionPage(QWidget):
     def persist_layout(self) -> None:
         self.settings.setValue("correction/workspace_sizes", self.workspace_splitter.sizes())
         self.settings.setValue("correction/view_sizes", self.views_splitter.sizes())
+        if len(self._view_row_splitters) == 2:
+            self.settings.setValue("correction/view_top_sizes", self._view_row_splitters[0].sizes())
+            self.settings.setValue("correction/view_bottom_sizes", self._view_row_splitters[1].sizes())
         self.settings.setValue("correction/view_count", int(self.view_count.currentData()))
 
     def _restore_layout(self) -> None:
@@ -968,8 +1024,18 @@ class CorrectionPage(QWidget):
         if isinstance(workspace_sizes, list) and len(workspace_sizes) == 3:
             self.workspace_splitter.setSizes([int(value) for value in workspace_sizes])
         view_sizes = self.settings.value("correction/view_sizes")
-        if isinstance(view_sizes, list) and len(view_sizes) == 4:
+        if isinstance(view_sizes, list) and len(view_sizes) == 2:
             self.views_splitter.setSizes([int(value) for value in view_sizes])
+        elif isinstance(view_sizes, list) and len(view_sizes) == 4:
+            self._view_row_splitters[0].setSizes([int(value) for value in view_sizes[:2]])
+            self._view_row_splitters[1].setSizes([int(value) for value in view_sizes[2:]])
+        for key, row in zip(
+            ("correction/view_top_sizes", "correction/view_bottom_sizes"),
+            self._view_row_splitters,
+        ):
+            sizes = self.settings.value(key)
+            if isinstance(sizes, list) and len(sizes) == 2:
+                row.setSizes([int(value) for value in sizes])
 
     def dirty_state(self) -> DirtyState:
         dirty = bool(self.session is not None and self.session.has_unsaved_changes())

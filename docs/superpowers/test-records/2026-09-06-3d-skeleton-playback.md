@@ -9,23 +9,26 @@
 - C3D：真实文件读取 738 帧、22 点、单位 mm，标签尾随空格被去除，无效残差转为 NaN。
 - 投影：正视、侧视、缩放、平移和 NaN 过滤通过手算测试。
 - 播放：时钟按真实经过时间取帧，暂停/续播和边界钳制通过；NaN 前后轨迹不跨接。
-- 页面：轨迹后台加载，播放/逐帧/调速/循环/视角/轨迹长度可用，关闭后定时器和任务停止。
+- 页面：轨迹后台加载，播放/逐帧/调速/循环/视角/残影范围可用，关闭后定时器和任务停止。
+- 方向控制：↑↓←→ 每次旋转 15°，俯仰角受限；方向旋转时保持当前姿态画面中心，避免绕世界原点造成跳位。
+- 骨架残影：最多抽样显示 8 个历史完整姿态，全部使用原始世界坐标和同一投影变换；“适应残影”会把真实位移范围纳入视口。
 - 质检：三维问题可按人物和帧跳转；零个或多个匹配时给出明确人工选择提示。
 
 ## 真实数据证据
 
-来源：`D:\test\data`；验收输出：`outputs/real-data-acceptance/20260906-213925/acceptance.json`。
+来源：`D:\test\data`；验收输出：`outputs/real-data-acceptance/20260906-2d3d-final/acceptance.json`。
 
 - 代表轨迹：739 帧、22 个标记点、21 条 HALPE 身体骨架边。
 - 可用格式：TRC、C3D。
 - 后台页面加载期间 Qt heartbeat 最大间隔：16.0 ms，低于 250 ms 门槛。
+- 当前验收帧抽样显示 8 个完整骨架残影，首个残影到当前帧的最大世界坐标位移为 0.203323 m。
 - 截图复核后将“适应全部”从整段位移范围改为当前帧人体范围，避免步行位移把骨架压缩成约 30 px。
 - 单个可见标记点的自动适配缩放和平移已限制在交互范围内，不会产生异常倍率。
 
 ## 自动化证据
 
 - 新增目录、读取器、投影、时钟、画布、页面和质检跳转测试均已通过。
-- 完整回归：`.venv\Scripts\python.exe -m unittest discover -s tests -q`，294 项通过，耗时 540.009 秒。
+- 完整回归：`.venv\Scripts\python.exe -m unittest discover -s tests -q`，305 项通过，耗时 592.467 秒。
 - 编译检查：`.venv\Scripts\python.exe -m compileall -q app tests scripts` 通过。
 - Windows 打包和 DLL 审计通过；`outputs/build/dist/MotionAnalysisStudio.exe` 的 GUI、Workflow、Capabilities smoke 全部通过。
 - Workflow smoke 已构造两帧三维轨迹、推进到第二帧并完成离屏渲染，因此冻结包会实际加载新增播放器模块。

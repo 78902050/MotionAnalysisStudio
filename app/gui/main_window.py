@@ -631,11 +631,26 @@ class MainWindow(QMainWindow):
         )
         session = service.create_session(resolution) if resolution.can_edit else None
         correction_page.open_resolution(resolution, session)
-        correction_page.set_view_addresses(
-            {camera: FrameAddress(camera, "raw", frame)},
+        cameras = tuple(
+            str(record["camera_id"])
+            for record in self.project.manifest.get("cameras", [])
+            if isinstance(record, dict)
+            and isinstance(record.get("camera_id"), str)
+            and record["camera_id"].strip()
+        ) if self.project is not None else (camera,)
+        addresses, failures, synchronized_frame = service.linked_raw_view_addresses(
+            camera,
+            frame,
+            cameras,
         )
+        correction_page.set_view_addresses(addresses, failures)
         self.statusBar().showMessage(
-            resolution.blocker or f"已打开 {camera} 原始 pose 帧 {frame}"
+            resolution.blocker
+            or (
+                f"已打开同步帧 {synchronized_frame} 的多相机画面"
+                if synchronized_frame is not None
+                else f"同步映射不可用；多相机按原始帧 {frame} 同帧浏览"
+            )
         )
         return resolution.can_edit
 
