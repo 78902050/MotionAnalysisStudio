@@ -81,12 +81,15 @@ class TrajectoryCanvas(QWidget):
         available_height = max(40.0, self.height() - 48.0)
         span_x = max(maximum_x - minimum_x, 1e-9)
         span_z = max(maximum_z - minimum_z, 1e-9)
-        zoom = min(available_width / span_x, available_height / span_z)
+        zoom = min(
+            1e6,
+            max(1e-6, min(available_width / span_x, available_height / span_z)),
+        )
         midpoint_x = (minimum_x + maximum_x) / 2
         midpoint_z = (minimum_z + maximum_z) / 2
         self.view_transform = replace(
             self.view_transform,
-            zoom=max(1e-6, zoom),
+            zoom=zoom,
             pan_x=-midpoint_x * zoom,
             pan_y=midpoint_z * zoom,
         )

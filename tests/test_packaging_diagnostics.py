@@ -36,6 +36,7 @@ class PackagingDiagnosticsTests(unittest.TestCase):
         self.assertTrue(result.ok, result.message)
         self.assertIn("existing results", result.checks)
         self.assertIn("pipeline interface", result.checks)
+        self.assertIn("3d playback", result.checks)
 
     def test_dll_audit_rejects_poppler_icu_selected_for_bundle(self) -> None:
         completed = self._run_dll_audit(

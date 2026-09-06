@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-06-2d-video-overlay-restoration-design.md`
 
+**Implementation status:** 已于 2026-09-06 完成；最终证据见 `docs/superpowers/test-records/2026-09-06-2d-video-overlay-restoration.md`。下列复选步骤保留为可重复执行的重建流程。
+
 ## Global Constraints
 
 - 不修改、删除或转码原视频和 Pose2Sim 二维标记视频。
@@ -61,7 +63,7 @@ def test_importer_maps_pose2sim_video_by_camera_name(self):
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_video_sources -v`
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -p test_video_sources.py -v`
 
 Expected: import failure for `app.media.video_sources` or missing `pose_video_path`.
 
@@ -71,7 +73,7 @@ Implement `CameraVideoSource.__post_init__()` validation, preferred-kind selecti
 
 - [ ] **Step 4: Run focused and importer regression tests**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_video_sources tests.test_existing_result_import tests.test_existing_result_refresh tests.test_gui_workflows -v`
+Run each file with `unittest discover`: `$patterns=@('test_video_sources.py','test_existing_result_import.py','test_existing_result_refresh.py','test_gui_workflows.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: all pass.
 
@@ -113,7 +115,7 @@ def test_media_page_marks_pose_video_source(self):
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_media_bindings -v`
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -p test_media_bindings.py -v`
 
 Expected: missing binding service and `source_kind`.
 
@@ -123,7 +125,7 @@ Use `QFileDialog.getOpenFileName()` only in click handlers. Put path validation 
 
 - [ ] **Step 4: Run media and project regressions**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_media_bindings tests.test_gui_workflows tests.test_project_manager tests.test_atomic_storage -v`
+Run each file with `unittest discover`: `$patterns=@('test_media_bindings.py','test_gui_workflows.py','test_project_manager.py','test_atomic_storage.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: all pass.
 
@@ -167,7 +169,7 @@ def test_main_window_configures_provider_before_first_pose_request(self):
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_frame_provider_sources -v`
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -p test_frame_provider_sources.py -v`
 
 Expected: wrong argument type or request occurs before `set_project`.
 
@@ -177,7 +179,7 @@ Pass the selected source path to `_CameraDecodeThread`, include kind and resolve
 
 - [ ] **Step 4: Run frame, workspace and heartbeat tests**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_frame_provider_sources tests.test_frame_provider tests.test_correction_workspace tests.test_gui_layout -v`
+Run each file with `unittest discover`: `$patterns=@('test_frame_provider_sources.py','test_frame_provider.py','test_correction_workspace.py','test_gui_layout.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: all pass; heartbeat remains below 250 ms.
 
@@ -221,7 +223,7 @@ def test_unknown_model_draws_points_without_edges(self):
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_skeleton_topology tests.test_correction_overlay -v`
+Run each file with `unittest discover`: `$patterns=@('test_skeleton_topology.py','test_correction_overlay.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: missing repository and unsupported `edges` argument.
 
@@ -231,7 +233,7 @@ Resolve the named Pose2Sim skeleton object, traverse parent/child nodes, retain 
 
 - [ ] **Step 4: Run correction regressions**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_skeleton_topology tests.test_correction_overlay tests.test_correction_page tests.test_correction_workspace tests.test_existing_pose_browser -v`
+Run each file with `unittest discover`: `$patterns=@('test_skeleton_topology.py','test_correction_overlay.py','test_correction_page.py','test_correction_workspace.py','test_existing_pose_browser.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: all pass.
 
@@ -267,14 +269,14 @@ def test_pose2sim_marker_video_is_used_when_original_is_absent(self):
 
 - [ ] **Step 2: Verify RED, then add acceptance reporting**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_existing_results_acceptance -v`
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -p test_existing_results_acceptance.py -v`
 
 Expected RED: acceptance fields are missing. Update the script to resolve and decode one frame directly from the authorized Pose2Sim marker-video source. Keep correction-save assertions confined to the isolated project copy; do not copy, transcode or modify the large source video.
 
 - [ ] **Step 3: Run focused, full and compile checks**
 
 ```text
-.venv\Scripts\python.exe -m unittest tests.test_existing_results_acceptance -v
+.venv\Scripts\python.exe -m unittest discover -s tests -p test_existing_results_acceptance.py -v
 .venv\Scripts\python.exe -m unittest discover -s tests -q
 .venv\Scripts\python.exe -m compileall -q app tests scripts
 ```

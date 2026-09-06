@@ -66,6 +66,23 @@ class TrajectoryCanvasTests(unittest.TestCase):
 
         self.assertGreater(canvas.view_transform.zoom, 200)
 
+    def test_fit_all_bounds_zoom_for_single_visible_marker(self) -> None:
+        trajectory = PlaybackTrajectory(
+            (1,),
+            (0.0,),
+            {"Marker": ((12.0, 34.0, 56.0),)},
+            "mm",
+            TrajectorySource(Path("trial_P0_1-1.c3d"), "c3d", "trial", "P0", "raw"),
+        )
+        canvas = TrajectoryCanvas()
+        canvas.resize(400, 300)
+
+        canvas.set_trajectory(trajectory)
+
+        self.assertLessEqual(canvas.view_transform.zoom, 1e6)
+        self.assertLessEqual(abs(canvas.view_transform.pan_x), 100 * canvas.view_transform.zoom)
+        self.assertLessEqual(abs(canvas.view_transform.pan_y), 100 * canvas.view_transform.zoom)
+
 
 if __name__ == "__main__":
     unittest.main()

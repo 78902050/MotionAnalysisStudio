@@ -219,6 +219,46 @@ def run_workflow_smoke() -> GuiSmokeResult:
             if tuple(commands) != GENERAL_POSE2SIM_STAGES:
                 raise RuntimeError("general Pose2Sim stage commands are incomplete")
             checks.append("pipeline interface")
+
+            from PySide6.QtGui import QImage
+            from PySide6.QtWidgets import QApplication
+
+            from app.gui.widgets.trajectory_canvas import TrajectoryCanvas
+            from app.playback.clock import PlaybackClock
+            from app.playback.model import PlaybackTrajectory, TrajectorySource
+
+            application = QApplication.instance()
+            if application is None:
+                application = QApplication(["MotionAnalysisStudio", "-platform", "offscreen"])
+            trajectory = PlaybackTrajectory(
+                (1, 2),
+                (0.0, 0.1),
+                {
+                    "Hip": ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+                    "Head": ((0.0, 0.0, 1.0), (1.0, 0.0, 1.0)),
+                },
+                "m",
+                TrajectorySource(
+                    Path(directory) / "smoke_P0_1-2.trc",
+                    "trc",
+                    "smoke",
+                    "P0",
+                    "raw",
+                ),
+            )
+            clock = PlaybackClock()
+            clock.start(10.0, trajectory.times[0])
+            canvas = TrajectoryCanvas()
+            canvas.resize(320, 240)
+            canvas.set_trajectory(trajectory, (("Hip", "Head"),))
+            canvas.set_frame_index(clock.frame_index(trajectory.times, 10.2))
+            image = QImage(320, 240, QImage.Format.Format_ARGB32)
+            canvas.render(image)
+            if canvas.frame_index != 1 or image.isNull():
+                raise RuntimeError("3D playback did not advance and render")
+            canvas.close()
+            application.processEvents()
+            checks.append("3d playback")
     except Exception as exc:
         return GuiSmokeResult(
             False,

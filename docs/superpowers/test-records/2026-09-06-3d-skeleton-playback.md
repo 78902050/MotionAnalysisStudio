@@ -14,17 +14,21 @@
 
 ## 真实数据证据
 
-来源：`D:\test\data`；验收输出：`outputs/real-data-acceptance/20260906-141045/acceptance.json`。
+来源：`D:\test\data`；验收输出：`outputs/real-data-acceptance/20260906-213925/acceptance.json`。
 
 - 代表轨迹：739 帧、22 个标记点、21 条 HALPE 身体骨架边。
 - 可用格式：TRC、C3D。
-- 后台页面加载期间 Qt heartbeat 最大间隔：31.0 ms，低于 250 ms 门槛。
+- 后台页面加载期间 Qt heartbeat 最大间隔：16.0 ms，低于 250 ms 门槛。
 - 截图复核后将“适应全部”从整段位移范围改为当前帧人体范围，避免步行位移把骨架压缩成约 30 px。
+- 单个可见标记点的自动适配缩放和平移已限制在交互范围内，不会产生异常倍率。
 
 ## 自动化证据
 
 - 新增目录、读取器、投影、时钟、画布、页面和质检跳转测试均已通过。
-- 完整回归、compileall 和冻结 EXE 结果在本轮最终集成验收后追加。
+- 完整回归：`.venv\Scripts\python.exe -m unittest discover -s tests -q`，294 项通过，耗时 540.009 秒。
+- 编译检查：`.venv\Scripts\python.exe -m compileall -q app tests scripts` 通过。
+- Windows 打包和 DLL 审计通过；`outputs/build/dist/MotionAnalysisStudio.exe` 的 GUI、Workflow、Capabilities smoke 全部通过。
+- Workflow smoke 已构造两帧三维轨迹、推进到第二帧并完成离屏渲染，因此冻结包会实际加载新增播放器模块。
 
 ## 已知限制
 

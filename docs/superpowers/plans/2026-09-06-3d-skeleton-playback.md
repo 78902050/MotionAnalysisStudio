@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-06-3d-skeleton-playback-design.md`
 
+**Implementation status:** 已于 2026-09-06 完成；最终证据见 `docs/superpowers/test-records/2026-09-06-3d-skeleton-playback.md`。下列复选步骤保留为可重复执行的重建流程。
+
 ## Global Constraints
 
 - TRC/C3D 只读，不重写、不转换、不删除。
@@ -52,7 +54,7 @@ def test_catalog_groups_pose2sim_variants_without_ranking_quality(self):
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_playback_catalog -v`
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -p test_playback_catalog.py -v`
 
 Expected: `app.playback` does not exist.
 
@@ -62,7 +64,7 @@ Scan only `pose-3d/*.trc` and `pose-3d/*.c3d`, parse `P<number>` semantically, p
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_playback_catalog tests.test_existing_analysis_flow -v`
+Run each file with `unittest discover`: `$patterns=@('test_playback_catalog.py','test_existing_analysis_flow.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: all pass.
 
@@ -104,7 +106,7 @@ def test_c3d_reader_trims_labels_and_converts_invalid_residual_to_nan(self):
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_playback_readers -v`
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -p test_playback_readers.py -v`
 
 Expected: reader module or load function missing.
 
@@ -114,7 +116,7 @@ Parse TRC rows independently of `Trajectory.from_trc()` while sharing unit alias
 
 - [ ] **Step 4: Run reader and strict-analysis regressions**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_playback_readers tests.test_analysis_contracts tests.test_metrics -v`
+Run each file with `unittest discover`: `$patterns=@('test_playback_readers.py','test_analysis_contracts.py','test_metrics.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: playback reader accepts the mismatch fixture; strict `Trajectory.from_trc()` still rejects it.
 
@@ -156,7 +158,7 @@ def test_missing_point_is_not_projected_to_origin(self):
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_playback_projection -v`
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -p test_playback_projection.py -v`
 
 Expected: projection APIs missing.
 
@@ -166,7 +168,7 @@ Use explicit rotation matrices, finite-point bounds and clamped perspective dept
 
 - [ ] **Step 4: Run projection and 2D topology regressions**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_playback_projection tests.test_skeleton_topology tests.test_correction_overlay -v`
+Run each file with `unittest discover`: `$patterns=@('test_playback_projection.py','test_skeleton_topology.py','test_correction_overlay.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: all pass.
 
@@ -207,7 +209,7 @@ def test_canvas_does_not_connect_trail_across_nan_gap(self):
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_playback_clock tests.test_trajectory_canvas -v`
+Run each file with `unittest discover`: `$patterns=@('test_playback_clock.py','test_trajectory_canvas.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: clock and canvas modules missing.
 
@@ -217,7 +219,7 @@ Keep clock free of Qt for deterministic tests. Draw grid, axes, trails, edges an
 
 - [ ] **Step 4: Run clock/canvas and GUI layout tests**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_playback_clock tests.test_trajectory_canvas tests.test_gui_layout -v`
+Run each file with `unittest discover`: `$patterns=@('test_playback_clock.py','test_trajectory_canvas.py','test_gui_layout.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: all pass.
 
@@ -258,7 +260,7 @@ def test_project_trc_is_listed_loaded_and_played_without_blocking(self):
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_playback_3d_page -v`
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -p test_playback_3d_page.py -v`
 
 Expected: missing page key/module.
 
@@ -268,7 +270,7 @@ Build source controls, central canvas, collapsible inspector and bottom timeline
 
 - [ ] **Step 4: Run page, shell and lifecycle tests**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_playback_3d_page tests.test_gui_shell tests.test_gui_layout tests.test_application_controller -v`
+Run each file with `unittest discover`: `$patterns=@('test_playback_3d_page.py','test_gui_shell.py','test_gui_layout.py','test_application_controller.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: all pass; page closes with no active timer/task.
 
@@ -303,7 +305,7 @@ def test_quality_issue_opens_matching_person_and_frame_in_player(self):
 
 - [ ] **Step 2: Run tests and verify RED**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_quality_3d_playback_jump -v`
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -p test_quality_3d_playback_jump.py -v`
 
 Expected: signal/button missing.
 
@@ -313,7 +315,7 @@ Enable the button only when the selected issue has a non-negative 3D frame. Pass
 
 - [ ] **Step 4: Run quality and playback regressions**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_quality_3d_playback_jump tests.test_quality_pages tests.test_playback_3d_page -v`
+Run each file with `unittest discover`: `$patterns=@('test_quality_3d_playback_jump.py','test_quality_pages.py','test_playback_3d_page.py'); foreach($pattern in $patterns){ .venv\Scripts\python.exe -m unittest discover -s tests -p $pattern -v; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }`
 
 Expected: all pass.
 
@@ -351,7 +353,7 @@ def test_real_pose2sim_trajectory_is_ready_for_playback(self):
 
 - [ ] **Step 2: Verify RED, then add isolated real-data playback check**
 
-Run: `.venv\Scripts\python.exe -m unittest tests.test_existing_results_acceptance -v`
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -p test_existing_results_acceptance.py -v`
 
 Expected RED: `playback_3d` report is missing. Copy one TRC and matching C3D to output, load/read only the copies, and report diagnostics without changing source data.
 

@@ -14,8 +14,10 @@
 ## 自动化证据
 
 - 聚焦测试：视频来源 5 项、媒体绑定 4 项、来源隔离 2 项、拓扑 3 项、画布 2 项均通过。
-- 完整回归：`.venv\Scripts\python.exe -m unittest discover -s tests -q`，270 项通过，耗时 430.828 秒。
+- 完整回归：`.venv\Scripts\python.exe -m unittest discover -s tests -q`，294 项通过，耗时 540.009 秒。
 - 编译检查：`.venv\Scripts\python.exe -m compileall -q app tests scripts` 通过。
+- Windows 打包：`scripts\build_windows.ps1` 通过；DLL 审计未选择不兼容的 Poppler ICU。
+- 冻结包：GUI、Workflow、Capabilities 三种 smoke 均通过；Workflow 包含二维保存/恢复和三维回放渲染。
 
 ## 真实数据证据
 
@@ -27,10 +29,11 @@
 - 26 个 HALPE_26 点生成 21 条语义骨架边。
 - 原 Pose JSON 与视频均未写入；修正保存/备份/恢复发生在独立验收输出中。
 
-验收报告：`outputs/real-data-acceptance/20260906-133912/acceptance.json`。
+验收报告：`outputs/real-data-acceptance/20260906-213925/acceptance.json`。
+
+冻结程序：`outputs/build/dist/MotionAnalysisStudio.exe`。
 
 ## 已知限制
 
 - 同一相机没有任何视频来源时只能在姿态坐标空间编辑，不能进行画面对照。
 - 未知或无法唯一确认的骨架模型不自动连线。
-- 冻结 EXE 将在三维回放集成完成后统一重建和复验，避免对中间产物重复验收。
