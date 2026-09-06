@@ -182,6 +182,7 @@ class MainWindow(QMainWindow):
         assert isinstance(correction_page, CorrectionPage)
         self.controller.register_editor("correction_2d", correction_page)
         correction_page.frame_requested.connect(self._open_correction_frame)
+        correction_page.browse_requested.connect(self._open_pose_frame)
         pipeline_page = self._pages["pipeline"]
         assert isinstance(pipeline_page, PipelinePage)
         self.controller.register_editor("pose2sim_config", pipeline_page)
@@ -379,7 +380,12 @@ class MainWindow(QMainWindow):
                 camera_id = record.get("camera_id")
                 if isinstance(camera_id, str) and camera_id.strip():
                     cameras.append(camera_id)
-            correction_page.set_cameras(cameras)
+            pose_inventory = ExistingResultDiscovery.pose_frame_inventory(project.root)
+            if pose_inventory:
+                correction_page.set_pose_inventory(pose_inventory)
+            else:
+                correction_page.set_pose_inventory({})
+                correction_page.set_cameras(cameras)
             videos: dict[str, Path] = {}
             for record in project.manifest.get("cameras", []):
                 if not isinstance(record, dict):
@@ -532,6 +538,44 @@ class MainWindow(QMainWindow):
         if resolution.blocker:
             self.statusBar().showMessage(resolution.blocker)
         return True
+
+    @Slot(str, int, int, int)
+    def _open_pose_frame(
+        self,
+        camera: str,
+        frame: int,
+        person_index: int,
+        keypoint_index: int,
+    ) -> bool:
+        service = self.quality_correction_service
+        correction_page = self._pages.get("correction_2d")
+        if service is None or not isinstance(correction_page, CorrectionPage):
+            self.statusBar().showMessage("请先打开已有二维结果所属项目")
+            return False
+        if correction_page.dirty_state().dirty:
+            decision = self._ask_dirty_decision()
+            if decision == "cancel":
+                return False
+            if decision == "save":
+                if not correction_page.save():
+                    return False
+            else:
+                correction_page.discard_unsaved()
+        resolution = service.resolve_pose_frame(
+            camera,
+            frame,
+            person_index,
+            keypoint_index,
+        )
+        session = service.create_session(resolution) if resolution.can_edit else None
+        correction_page.open_resolution(resolution, session)
+        correction_page.set_view_addresses(
+            {camera: FrameAddress(camera, "raw", frame)},
+        )
+        self.statusBar().showMessage(
+            resolution.blocker or f"已打开 {camera} 原始 pose 帧 {frame}"
+        )
+        return resolution.can_edit
 
     def _open_correction_frame(self, synchronized_frame: int) -> None:
         correction_page = self._pages.get("correction_2d")

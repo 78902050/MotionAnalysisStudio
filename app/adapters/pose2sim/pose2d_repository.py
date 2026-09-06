@@ -13,6 +13,42 @@ from app.domain.addresses import CorrectionTarget, FrameAddress, KeypointAddress
 from app.domain.pose2d import FramePose, PersonPose, PoseKeypoint
 
 
+HALPE_26_KEYPOINT_NAMES: tuple[str, ...] = (
+    "Nose",
+    "LEye",
+    "REye",
+    "LEar",
+    "REar",
+    "LShoulder",
+    "RShoulder",
+    "LElbow",
+    "RElbow",
+    "LWrist",
+    "RWrist",
+    "LHip",
+    "RHip",
+    "LKnee",
+    "RKnee",
+    "LAnkle",
+    "RAnkle",
+    "Head",
+    "Neck",
+    "Hip",
+    "LBigToe",
+    "RBigToe",
+    "LSmallToe",
+    "RSmallToe",
+    "LHeel",
+    "RHeel",
+)
+
+
+def inferred_keypoint_schema(count: int) -> tuple[str, tuple[str, ...]]:
+    if count == len(HALPE_26_KEYPOINT_NAMES):
+        return "HALPE_26", HALPE_26_KEYPOINT_NAMES
+    return f"unknown-{count}", tuple(f"index-{index:03d}" for index in range(count))
+
+
 class Pose2DFrameDocument:
     def __init__(
         self,
@@ -312,6 +348,7 @@ class Pose2DRepository:
         prefix = f"{camera}_"
         for path in directory.glob(f"{camera}_*.json"):
             suffix = path.stem[len(prefix) :]
-            if suffix.isdigit() and int(suffix) == frame:
+            frame_token = suffix.split("_", 1)[0]
+            if frame_token.isdigit() and int(frame_token) == frame:
                 return path
         raise FileNotFoundError(f"Pose2Sim frame not found: camera={camera}, frame={frame}")

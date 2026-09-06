@@ -14,6 +14,32 @@ _DERIVED_VIDEO_TOKENS = ("_pose", "_sync", "_tracked", "_calibration")
 
 
 class ExistingResultDiscovery:
+    @staticmethod
+    def pose_frame_inventory(
+        root: Path,
+        layer: str = "pose",
+    ) -> dict[str, tuple[int, ...]]:
+        if layer not in {"pose", "pose-sync", "pose-associated"}:
+            raise ValueError(f"unsupported pose layer: {layer}")
+        directory = Path(root).resolve() / layer
+        inventory: dict[str, tuple[int, ...]] = {}
+        if not directory.is_dir():
+            return inventory
+        for camera_directory in sorted(directory.glob("*_json")):
+            if not camera_directory.is_dir():
+                continue
+            camera = camera_directory.name.removesuffix("_json")
+            prefix = f"{camera}_"
+            frames: set[int] = set()
+            for path in camera_directory.glob(f"{camera}_*.json"):
+                suffix = path.stem[len(prefix) :]
+                frame_token = suffix.split("_", 1)[0]
+                if frame_token.isdigit():
+                    frames.add(int(frame_token))
+            if frames:
+                inventory[camera] = tuple(sorted(frames))
+        return inventory
+
     def discover_one(self, path: Path) -> TrialCandidate:
         root = Path(path).resolve()
         if not root.is_dir():
@@ -137,4 +163,3 @@ class ExistingResultDiscovery:
             else:
                 source.append(resolved)
         return tuple(source), tuple(derived)
-

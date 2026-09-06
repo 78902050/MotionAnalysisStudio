@@ -6,9 +6,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.adapters.pose2sim.pose2d_repository import Pose2DRepository
+from app.adapters.pose2sim.pose2d_repository import (
+    Pose2DRepository,
+    inferred_keypoint_schema,
+)
 from app.correction.session import CorrectionSession
-from app.domain.addresses import CorrectionTarget, FrameAddress, PersonAddress
+from app.domain.addresses import CorrectionTarget, FrameAddress, KeypointAddress, PersonAddress
 from app.domain.issues import QualityIssue
 from app.pose_editor.model import PoseDocument
 from app.project.manager import ProjectManager
@@ -105,6 +108,92 @@ class QualityCorrectionService:
             "二维修正定位",
         )
         return self.resolve_issue(issue)
+
+    def resolve_pose_frame(
+        self,
+        camera: str,
+        frame: int,
+        person_index: int = 0,
+        keypoint_index: int = 0,
+    ) -> CorrectionResolution:
+        if not isinstance(person_index, int) or isinstance(person_index, bool) or person_index < 0:
+            raise ValueError("person index must be a non-negative integer")
+        if not isinstance(keypoint_index, int) or isinstance(keypoint_index, bool) or keypoint_index < 0:
+            raise ValueError("keypoint index must be a non-negative integer")
+        issue_id = f"直接浏览 {camera} 帧 {frame}"
+        directory = self.project.root / "pose" / f"{camera}_json"
+        try:
+            pose_path = Pose2DRepository._find_frame(directory, camera, frame)
+            payload = json.loads(pose_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            return self._blocked(
+                issue_id,
+                f"二维 pose 文件不可读：{exc}",
+                raw_frame=frame,
+            )
+        people = payload.get("people") if isinstance(payload, dict) else None
+        if not isinstance(people, list) or person_index >= len(people):
+            return self._blocked(
+                issue_id,
+                f"原始人物索引 {person_index} 不存在",
+                raw_frame=frame,
+                pose_path=pose_path,
+            )
+        person = people[person_index]
+        values = person.get("pose_keypoints_2d") if isinstance(person, dict) else None
+        if not isinstance(values, list) or not values or len(values) % 3:
+            return self._blocked(
+                issue_id,
+                "二维 pose 的关节点数组格式无效",
+                raw_frame=frame,
+                pose_path=pose_path,
+            )
+        keypoint_count = len(values) // 3
+        if keypoint_index >= keypoint_count:
+            return self._blocked(
+                issue_id,
+                f"关节点索引 {keypoint_index} 不存在",
+                raw_frame=frame,
+                pose_path=pose_path,
+            )
+        model_name, keypoint_names = inferred_keypoint_schema(keypoint_count)
+        project_person_id = person.get("project_person_id") if isinstance(person, dict) else None
+        track_segment_id = person.get("track_segment_id") if isinstance(person, dict) else None
+        target = CorrectionTarget(
+            FrameAddress(camera, "raw", frame),
+            PersonAddress(
+                project_person_id if isinstance(project_person_id, str) else f"raw-{person_index}",
+                track_segment_id if isinstance(track_segment_id, str) else None,
+                person_index,
+            ),
+            KeypointAddress(model_name, keypoint_names[keypoint_index], keypoint_index),
+        )
+        try:
+            document = Pose2DRepository(
+                self.project.root / "pose",
+                keypoint_names,
+                project_root=self.project.root,
+                model_name=model_name,
+            ).load_frame(camera, frame)
+            document.value_at(target)
+        except (OSError, ValueError, KeyError) as exc:
+            return self._blocked(
+                issue_id,
+                f"二维 pose 目标不可读：{exc}",
+                raw_frame=frame,
+                pose_path=pose_path,
+                keypoint_names=keypoint_names,
+            )
+        return CorrectionResolution(
+            issue_id,
+            None,
+            target,
+            None,
+            frame,
+            "pose 文件",
+            pose_path,
+            keypoint_names,
+        )
 
     def resolve_issue(self, issue: QualityIssue) -> CorrectionResolution:
         report_target = self._report_target(issue)
@@ -320,7 +409,9 @@ class QualityCorrectionService:
         if keypoint_names is None:
             return PoseDocument(path, project_root=self.project.root)
         camera = path.parent.name.removesuffix("_json")
-        frame_text = path.stem.rsplit("_", 1)[-1]
+        prefix = f"{camera}_"
+        suffix = path.stem[len(prefix) :] if path.stem.startswith(prefix) else ""
+        frame_text = suffix.split("_", 1)[0]
         if not frame_text.isdigit():
             raise ValueError(f"无法从二维 pose 文件名读取帧号：{path.name}")
         repository = Pose2DRepository(

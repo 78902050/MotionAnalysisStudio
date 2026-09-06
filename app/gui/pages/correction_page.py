@@ -223,6 +223,7 @@ class CorrectionCanvas(QWidget):
 
 class CorrectionPage(QWidget):
     frame_requested = Signal(int)
+    browse_requested = Signal(str, int, int, int)
 
     def __init__(
         self,
@@ -248,6 +249,8 @@ class CorrectionPage(QWidget):
         self._expected_frames: dict[str, int] = {}
         self._camera_names: list[str] = []
         self._camera_extents: dict[str, tuple[int, int]] = {}
+        self._pose_inventory: dict[str, tuple[int, ...]] = {}
+        self._suppress_browse = False
         self._view_addresses: dict[str, FrameAddress] = {}
         self._view_failures: dict[str, str] = {}
         self._build_ui()
@@ -401,6 +404,14 @@ class CorrectionPage(QWidget):
         self.raw_frame = QLabel("—")
         self.person_value = QLabel("—")
         self.keypoint_value = QLabel("—")
+        self.person_selector = QComboBox()
+        self.person_selector.setObjectName("correction_person_selector")
+        self.person_selector.addItem("人物 0", 0)
+        self.person_selector.currentIndexChanged.connect(self._browse_person_changed)
+        self.keypoint_selector = QComboBox()
+        self.keypoint_selector.setObjectName("correction_keypoint_selector")
+        self.keypoint_selector.addItem("index-000", 0)
+        self.keypoint_selector.currentIndexChanged.connect(self._emit_browse_request)
         self.x_value = QSpinBox()
         self.x_value.setRange(-100000, 100000)
         self.y_value = QSpinBox()
@@ -415,6 +426,8 @@ class CorrectionPage(QWidget):
         form.addRow("原视频帧", self.raw_frame)
         form.addRow("人物", self.person_value)
         form.addRow("关节点", self.keypoint_value)
+        form.addRow("浏览人物", self.person_selector)
+        form.addRow("浏览关节点", self.keypoint_selector)
         form.addRow("X", self.x_value)
         form.addRow("Y", self.y_value)
         form.addRow("置信度", self.confidence_value)
@@ -465,9 +478,7 @@ class CorrectionPage(QWidget):
         self.save_rerun_button.clicked.connect(self.save_and_rerun)
         self.previous_frame_button.clicked.connect(lambda: self._request_relative_frame(-1))
         self.next_frame_button.clicked.connect(lambda: self._request_relative_frame(1))
-        self.timeline.sliderReleased.connect(
-            lambda: self.frame_requested.emit(self.timeline.value())
-        )
+        self.timeline.sliderReleased.connect(self._timeline_released)
         area = make_scrollable_panel(bar)
         area.setObjectName("correction_action_scroll")
         area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -509,11 +520,81 @@ class CorrectionPage(QWidget):
         self.timeline.setRange(first, last)
 
     def _request_relative_frame(self, offset: int) -> None:
+        frames = self._pose_inventory.get(self.camera_selector.currentText(), ())
+        if frames:
+            current = self.timeline.value()
+            if offset < 0:
+                requested = next((frame for frame in reversed(frames) if frame < current), frames[0])
+            else:
+                requested = next((frame for frame in frames if frame > current), frames[-1])
+            self.timeline.setValue(requested)
+            self._emit_browse_request()
+            return
         requested = min(
             self.timeline.maximum(),
             max(self.timeline.minimum(), self.timeline.value() + int(offset)),
         )
         self.frame_requested.emit(requested)
+
+    def _timeline_released(self) -> None:
+        if self._pose_inventory:
+            self._emit_browse_request()
+        else:
+            self.frame_requested.emit(self.timeline.value())
+
+    def set_pose_inventory(self, inventory: dict[str, tuple[int, ...] | list[int]]) -> None:
+        normalized: dict[str, tuple[int, ...]] = {}
+        for camera, frames in inventory.items():
+            if not isinstance(camera, str) or not camera.strip():
+                continue
+            values = tuple(
+                sorted(
+                    {
+                        int(frame)
+                        for frame in frames
+                        if isinstance(frame, int) and not isinstance(frame, bool) and frame >= 0
+                    }
+                )
+            )
+            if values:
+                normalized[camera] = values
+        self._pose_inventory = normalized
+        self.set_cameras(tuple(normalized))
+        if normalized:
+            self._apply_pose_camera(self.camera_selector.currentText(), emit=True)
+
+    def _apply_pose_camera(self, camera: str, *, emit: bool) -> None:
+        frames = self._pose_inventory.get(camera, ())
+        if not frames:
+            return
+        self.set_timeline_range(frames[0], frames[-1])
+        if self.timeline.value() not in frames:
+            self.timeline.setValue(frames[0])
+        if emit:
+            self._emit_browse_request()
+
+    def _browse_person_changed(self) -> None:
+        self._emit_browse_request()
+
+    def _emit_browse_request(self) -> None:
+        if self._suppress_browse:
+            return
+        camera = self.camera_selector.currentText()
+        frames = self._pose_inventory.get(camera, ())
+        if not frames:
+            return
+        requested = self.timeline.value()
+        frame = min(frames, key=lambda candidate: abs(candidate - requested))
+        if frame != requested:
+            self.timeline.setValue(frame)
+        person = self.person_selector.currentData()
+        keypoint = self.keypoint_selector.currentData()
+        self.browse_requested.emit(
+            camera,
+            frame,
+            int(person) if isinstance(person, int) else 0,
+            int(keypoint) if isinstance(keypoint, int) else 0,
+        )
 
     def set_cameras(self, cameras: list[str] | tuple[str, ...]) -> None:
         names = [camera for camera in cameras if isinstance(camera, str) and camera.strip()]
@@ -561,6 +642,7 @@ class CorrectionPage(QWidget):
                 self._canvases[index].set_data_extent(*extent)
         if self._view_addresses or self._view_failures:
             self._request_visible_frames()
+        self._apply_pose_camera(camera, emit=persist)
 
     def set_view_addresses(
         self,
@@ -604,6 +686,10 @@ class CorrectionPage(QWidget):
         self.confidence_value.setValue(0)
         self.issue_list.clear()
         self.issue_list.addItem("暂无质量问题")
+        self.person_selector.clear()
+        self.person_selector.addItem("人物 0", 0)
+        self.keypoint_selector.clear()
+        self.keypoint_selector.addItem("index-000", 0)
         for index, canvas in enumerate(self._canvases):
             canvas.clear()
             camera = str(self._view_cards[index].property("camera") or "")
@@ -636,6 +722,7 @@ class CorrectionPage(QWidget):
         resolution: CorrectionResolution,
         session: Any,
     ) -> None:
+        self._suppress_browse = True
         self.resolution = resolution
         self.session = session
         if resolution.edit_target is not None:
@@ -655,7 +742,11 @@ class CorrectionPage(QWidget):
         self.raw_frame.setText(
             str(resolution.raw_frame) if resolution.raw_frame is not None else "—"
         )
-        synchronized_frame = resolution.synchronized_frame or 0
+        synchronized_frame = (
+            resolution.synchronized_frame
+            if resolution.synchronized_frame is not None
+            else resolution.raw_frame or 0
+        )
         if not self.timeline.minimum() <= synchronized_frame <= self.timeline.maximum():
             self.set_timeline_range(
                 min(self.timeline.minimum(), synchronized_frame),
@@ -664,6 +755,8 @@ class CorrectionPage(QWidget):
         self.timeline.setValue(synchronized_frame)
         self.issue_list.clear()
         self.issue_list.addItem(resolution.issue_id)
+        self._fill_browse_selectors(resolution)
+        self._suppress_browse = False
         enabled = bool(resolution.can_edit and session is not None)
         for widget in (
             self.x_value,
@@ -682,6 +775,46 @@ class CorrectionPage(QWidget):
             return
         self.session_status.setText(f"已定位问题 {resolution.issue_id}")
         self._refresh_point_fields()
+
+    def _fill_browse_selectors(self, resolution: CorrectionResolution) -> None:
+        self.person_selector.blockSignals(True)
+        self.keypoint_selector.blockSignals(True)
+        self.person_selector.clear()
+        self.keypoint_selector.clear()
+        frame_pose_method = getattr(getattr(self.session, "document", None), "frame_pose", None)
+        frame_pose = None
+        if callable(frame_pose_method):
+            try:
+                frame_pose = frame_pose_method()
+            except (OSError, ValueError, KeyError):
+                frame_pose = None
+        if frame_pose is not None:
+            for person in frame_pose.people:
+                label = person.project_person_id or f"人物 {person.raw_person_index}"
+                self.person_selector.addItem(label, person.raw_person_index)
+            target = resolution.edit_target
+            person_index = target.person.raw_person_index if target is not None else 0
+            selected_person = next(
+                (person for person in frame_pose.people if person.raw_person_index == person_index),
+                frame_pose.people[0] if frame_pose.people else None,
+            )
+            if selected_person is not None:
+                for index, point in enumerate(selected_person.keypoints):
+                    self.keypoint_selector.addItem(point.name, index)
+        if not self.person_selector.count():
+            self.person_selector.addItem("人物 0", 0)
+        if not self.keypoint_selector.count():
+            self.keypoint_selector.addItem("index-000", 0)
+        target = resolution.edit_target
+        if target is not None:
+            person_index = self.person_selector.findData(target.person.raw_person_index)
+            if person_index >= 0:
+                self.person_selector.setCurrentIndex(person_index)
+            keypoint_index = self.keypoint_selector.findData(target.keypoint.source_index)
+            if keypoint_index >= 0:
+                self.keypoint_selector.setCurrentIndex(keypoint_index)
+        self.person_selector.blockSignals(False)
+        self.keypoint_selector.blockSignals(False)
 
     def nudge_selected(self, x_steps: int, y_steps: int) -> None:
         target = self._editable_target()
