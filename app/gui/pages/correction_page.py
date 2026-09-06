@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from app.domain.addresses import CorrectionTarget
 from app.application.dirty_state import DirtyState
+from app.visualization.skeleton import SkeletonTopologyRepository
 
 from ..layout import make_resizable_splitter, make_scrollable_panel
 
@@ -44,6 +45,7 @@ class CorrectionCanvas(QWidget):
         self._image = QImage()
         self._selected_point: QPointF | None = None
         self._points: dict[str, tuple[float, float, float]] = {}
+        self._edges: tuple[tuple[str, str], ...] = ()
         self._data_width = 0.0
         self._data_height = 0.0
         self._explicit_extent = False
@@ -80,6 +82,10 @@ class CorrectionCanvas(QWidget):
     def point_count(self) -> int:
         return len(self._points)
 
+    @property
+    def edge_count(self) -> int:
+        return sum(self._edge_is_visible(edge) for edge in self._edges)
+
     def set_frame(self, image: object) -> None:
         if isinstance(image, QImage):
             converted = image.copy()
@@ -105,8 +111,13 @@ class CorrectionCanvas(QWidget):
         self._selected_point = QPointF(float(x), float(y))
         self.update()
 
-    def set_pose_points(self, points: dict[str, tuple[float, float, float]]) -> None:
+    def set_pose_points(
+        self,
+        points: dict[str, tuple[float, float, float]],
+        edges: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         self._points = dict(points)
+        self._edges = tuple(edges)
         if self._image.isNull() and points and not self._explicit_extent:
             finite_points = [
                 (float(x), float(y))
@@ -127,6 +138,7 @@ class CorrectionCanvas(QWidget):
         self._image = QImage()
         self._selected_point = None
         self._points.clear()
+        self._edges = ()
         self._data_width = 0.0
         self._data_height = 0.0
         self._explicit_extent = False
@@ -145,6 +157,16 @@ class CorrectionCanvas(QWidget):
             painter.setPen(QPen(QColor("#2a3b49"), 1))
             painter.drawRect(target)
         if not target.isEmpty():
+            painter.setPen(QPen(QColor(117, 215, 199, 190), 2))
+            for edge in self._edges:
+                if not self._edge_is_visible(edge):
+                    continue
+                left = self._points[edge[0]]
+                right = self._points[edge[1]]
+                painter.drawLine(
+                    self._image_to_widget(QPointF(left[0], left[1])),
+                    self._image_to_widget(QPointF(right[0], right[1])),
+                )
             painter.setPen(QPen(QColor("#75d7c7"), 1))
             painter.setBrush(QColor(117, 215, 199, 125))
             for x, y, confidence in self._points.values():
@@ -158,6 +180,15 @@ class CorrectionCanvas(QWidget):
             painter.drawEllipse(point, 7, 7)
             painter.drawLine(point + QPointF(-11, 0), point + QPointF(11, 0))
             painter.drawLine(point + QPointF(0, -11), point + QPointF(0, 11))
+
+    def _edge_is_visible(self, edge: tuple[str, str]) -> bool:
+        if edge[0] not in self._points or edge[1] not in self._points:
+            return False
+        for name in edge:
+            x, y, confidence = self._points[name]
+            if confidence <= 0 or not math.isfinite(x) or not math.isfinite(y):
+                return False
+        return True
 
     def mousePressEvent(self, event) -> None:
         if (
@@ -253,6 +284,7 @@ class CorrectionPage(QWidget):
         self._suppress_browse = False
         self._view_addresses: dict[str, FrameAddress] = {}
         self._view_failures: dict[str, str] = {}
+        self._topologies = SkeletonTopologyRepository()
         self._build_ui()
         if self.provider is not None:
             self.provider.frame_ready.connect(self._on_frame_ready)
@@ -671,8 +703,16 @@ class CorrectionPage(QWidget):
                 continue
             address = self._view_addresses.get(camera)
             if address is not None and self.provider is not None:
-                self._view_labels[index].setText(f"{camera} · 正在读取原视频帧 {address.frame}")
+                self._view_labels[index].setText(
+                    self._video_status(camera, f"正在读取帧 {address.frame}")
+                )
                 self.provider.request(address)
+
+    def _video_status(self, camera: str, status: str) -> str:
+        source_for = getattr(self.provider, "source_for", None)
+        source = source_for(camera) if callable(source_for) else None
+        source_label = getattr(source, "display_kind", "视频")
+        return f"{camera} · {source_label} · {status}"
 
     def clear_project_context(self) -> None:
         self.session = None
@@ -898,12 +938,12 @@ class CorrectionPage(QWidget):
             if len(raw) != 1:
                 return
             person = raw[0]
-        self._canvases[view_index].set_pose_points(
-            {
-                point.name: (point.x, point.y, point.confidence)
-                for point in person.keypoints
-            }
-        )
+        points = {
+            point.name: (point.x, point.y, point.confidence)
+            for point in person.keypoints
+        }
+        edges = self._topologies.edges_for(target.keypoint.model_name, points)
+        self._canvases[view_index].set_pose_points(points, edges=edges)
 
     def _canvas_point_moved(self, view_index: int, x: float, y: float) -> None:
         target = self._editable_target()
@@ -982,11 +1022,13 @@ class CorrectionPage(QWidget):
         for index, card in enumerate(self._view_cards):
             if card.property("camera") == camera:
                 self._canvases[index].set_frame(image)
-                self._view_labels[index].setText(f"{camera} · 原视频帧 {frame}")
+                self._view_labels[index].setText(self._video_status(camera, f"帧 {frame}"))
 
     def _on_frame_failed(self, camera: str, frame: int, reason: str) -> None:
         if self._expected_frames.get(camera) != frame:
             return
         for index, card in enumerate(self._view_cards):
             if card.property("camera") == camera:
-                self._view_labels[index].setText(f"{camera} · 原视频帧 {frame} · {reason}")
+                self._view_labels[index].setText(
+                    self._video_status(camera, f"帧 {frame} · {reason}")
+                )
