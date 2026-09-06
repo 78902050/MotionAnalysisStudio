@@ -22,6 +22,7 @@ from app.association.model import AssociationReport, MaterializeResult
 from app.association.overrides import AssociationOverrideStore
 from app.application.controller import ApplicationController
 from app.project.manager import ProjectManager
+from app.project.discovery import ExistingResultDiscovery
 from app.quality.model import QualityReport
 from app.quality.report_store import QualityReportStore
 from app.tasks.base import TaskRequest
@@ -101,6 +102,15 @@ class AssociationPage(QWidget):
         toolbar.addWidget(self.status, 1)
         layout.addLayout(toolbar)
 
+        layout.addWidget(QLabel("已有 pose-associated 结果（只读）"))
+        self.existing_results_table = QTableWidget(0, 3)
+        self.existing_results_table.setObjectName("association_existing_results_table")
+        self.existing_results_table.setHorizontalHeaderLabels(["相机", "帧文件", "帧范围"])
+        self.existing_results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.existing_results_table.horizontalHeader().setStretchLastSection(True)
+        self.existing_results_table.setMaximumHeight(150)
+        layout.addWidget(self.existing_results_table)
+
         self.candidate_table = QTableWidget(0, 7)
         self.candidate_table.setObjectName("association_candidate_table")
         self.candidate_table.setHorizontalHeaderLabels(
@@ -165,9 +175,30 @@ class AssociationPage(QWidget):
         self._project_id = str(project.manifest.get("project_id", "")) if project else ""
         self.report = None
         self.candidate_table.setRowCount(0)
+        self.existing_results_table.setRowCount(0)
         self._clear_selected()
         self.materialize_button.setEnabled(False)
-        self.status.setText("已打开项目；点击“扫描关联候选”开始后台分析" if project else "请先打开项目")
+        if project is None:
+            self.status.setText("请先打开项目")
+            return
+        inventory = ExistingResultDiscovery.pose_frame_inventory(
+            project.root,
+            "pose-associated",
+        )
+        total = 0
+        for camera, frames in inventory.items():
+            row = self.existing_results_table.rowCount()
+            self.existing_results_table.insertRow(row)
+            total += len(frames)
+            for column, value in enumerate(
+                (camera, str(len(frames)), f"{frames[0]}–{frames[-1]}")
+            ):
+                self.existing_results_table.setItem(row, column, QTableWidgetItem(value))
+        self.status.setText(
+            f"已读取 {total} 个关联后二维帧；点击“扫描关联候选”进行语义身份检查"
+            if total
+            else "已打开项目；未发现 pose-associated 帧，可扫描当前输入寻找候选"
+        )
 
     def refresh(self) -> None:
         if self.project is None:

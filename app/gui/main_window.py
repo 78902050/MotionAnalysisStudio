@@ -30,6 +30,7 @@ from app.project.manager import ProjectManager
 from app.project.discovery import ExistingResultDiscovery
 from app.project.importer import ExistingResultImporter
 from app.quality.audit import QualityAuditService
+from app.quality.report_store import QualityReportStore
 from app.tasks.base import TaskRequest
 from app.tasks.handle import TaskHandle
 
@@ -420,8 +421,8 @@ class MainWindow(QMainWindow):
         project_page = self._pages.get("project")
         if isinstance(project_page, ProjectPage):
             project_page.set_project(project)
-        self._start_initial_quality_scan_if_needed(project)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
+        self._start_initial_quality_scan_if_needed(project)
         return True
 
     @Slot(object)
@@ -450,8 +451,17 @@ class MainWindow(QMainWindow):
         imported = project.manifest.get("imported_artifacts")
         if not isinstance(imported, dict) or not imported.get("pose_2d_files"):
             return
-        if project.path_for("quality_report").is_file():
-            return
+        quality_path = project.path_for("quality_report")
+        if quality_path.is_file():
+            try:
+                current_report = QualityReportStore(project).load_current()
+            except (OSError, ValueError, KeyError):
+                current_report = None
+            has_trc = any((project.root / "pose-3d").glob("*.trc"))
+            if current_report is not None and (
+                not has_trc or "3d_total_points" in current_report.metrics()
+            ):
+                return
         request = TaskRequest(
             str(project.manifest["project_id"]),
             self.controller.generation,

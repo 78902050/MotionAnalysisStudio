@@ -9,7 +9,9 @@ from uuid import uuid4
 
 from app.domain.addresses import FrameAddress, KeypointAddress, PersonAddress
 from app.domain.issues import QualityIssue
+from app.analysis.model import Trajectory
 from app.project.manager import ProjectManager
+from app.project.discovery import ExistingResultDiscovery
 
 from .model import QualityReport
 from .report_store import QualityReportStore
@@ -30,24 +32,59 @@ class QualityAuditService:
             "calibration",
             issues,
         )
-        synchronization = self._load_layer(
-            project.root / "synchronization" / "mapping.json",
-            "synchronization",
-            issues,
+        synchronization_path = project.root / "synchronization" / "mapping.json"
+        synchronized_inventory = ExistingResultDiscovery.pose_frame_inventory(
+            project.root,
+            "pose-sync",
         )
-        association = self._load_layer(
-            project.root / "pose-associated" / "results.json",
+        synchronization = (
+            self._load_layer(synchronization_path, "synchronization", issues)
+            if synchronization_path.is_file() or not synchronized_inventory
+            else None
+        )
+        association_path = project.root / "pose-associated" / "results.json"
+        associated_inventory = ExistingResultDiscovery.pose_frame_inventory(
+            project.root,
             "pose-associated",
-            issues,
         )
-        pose_3d = self._load_layer(project.root / "pose-3d" / "results.json", "pose-3d", issues)
+        association = (
+            self._load_layer(association_path, "pose-associated", issues)
+            if association_path.is_file() or not associated_inventory
+            else None
+        )
+        pose_3d_path = project.root / "pose-3d" / "results.json"
+        trc_paths = self._select_trc_files(project.root / "pose-3d")
+        pose_3d = (
+            self._load_layer(pose_3d_path, "pose-3d", issues)
+            if pose_3d_path.is_file() or not trc_paths
+            else None
+        )
         pose_2d, keypoint_indices, detection_count = self._load_pose_2d(project.root / "pose", issues)
 
         inputs["calibration"] = self._input_summary(calibration)
-        inputs["synchronization"] = self._input_summary(synchronization)
+        inputs["synchronization"] = (
+            self._input_summary(synchronization)
+            if not synchronized_inventory
+            else self._pose_inventory_summary(synchronized_inventory, "Pose2Sim pose-sync")
+        )
         inputs["pose_2d"] = sorted(pose_2d)
-        inputs["pose_3d"] = self._input_summary(pose_3d)
-        inputs["association"] = self._input_summary(association)
+        inputs["pose_3d"] = (
+            self._input_summary(pose_3d)
+            if not trc_paths
+            else {
+                "available": True,
+                "format": "TRC",
+                "files": [str(path) for path in trc_paths],
+            }
+        )
+        inputs["association"] = (
+            self._input_summary(association)
+            if not associated_inventory
+            else self._pose_inventory_summary(
+                associated_inventory,
+                "Pose2Sim pose-associated",
+            )
+        )
 
         actual_people = self._manifest_people(project.manifest.get("people"))
         associated_people, track_segments = self._association_counts(association)
@@ -145,6 +182,35 @@ class QualityAuditService:
                                 },
                             )
 
+        elif trc_paths:
+            for path in trc_paths:
+                try:
+                    trajectory = Trajectory.from_trc(path, coordinate_system="world")
+                except (OSError, UnicodeError, ValueError) as exc:
+                    self._add_issue(
+                        issues,
+                        kind="input_invalid",
+                        severity="blocking",
+                        message=f"cannot read TRC quality input: {path.name}",
+                        evidence={"layer": "pose-3d", "path": str(path), "reason": str(exc)},
+                    )
+                    continue
+                for frame_index, frame in enumerate(trajectory.frames):
+                    frame_has_valid_point = False
+                    for series in trajectory.points.values():
+                        total += 1
+                        point = series[frame_index]
+                        if all(math.isfinite(value) for value in point):
+                            valid += 1
+                            frame_has_valid_point = True
+                        else:
+                            missing += 1
+                    if frame_has_valid_point:
+                        valid_frames.append(frame)
+
+        metrics["3d_total_points"] = total
+        metrics["3d_valid_points"] = valid
+        metrics["3d_missing_points"] = missing
         metrics["valid_keypoint_rate"] = valid / total if total else None
         metrics["missing_rate"] = missing / total if total else None
         metrics["interpolated_rate"] = interpolated / total if total else None
@@ -161,6 +227,21 @@ class QualityAuditService:
 
         report_id = f"quality-{uuid4().hex[:12]}"
         return QualityReport.create(report_id, metrics, tuple(issues), inputs)
+
+    @staticmethod
+    def _select_trc_files(directory: Path) -> tuple[Path, ...]:
+        if not directory.is_dir():
+            return ()
+        selected: dict[str, tuple[int, Path]] = {}
+        for path in sorted(directory.glob("*.trc")):
+            stem = path.stem
+            lower = stem.casefold()
+            score = 2 if "lstm" in lower else 1 if "_filt_" in lower else 0
+            base = re.split(r"_filt_|_LSTM$", stem, maxsplit=1, flags=re.IGNORECASE)[0]
+            current = selected.get(base)
+            if current is None or score > current[0]:
+                selected[base] = (score, path.resolve())
+        return tuple(path for _score, path in sorted(selected.values(), key=lambda item: str(item[1]).casefold()))
 
     def save(self, report: QualityReport) -> None:
         if self._project is None:
@@ -184,6 +265,24 @@ class QualityAuditService:
         if value is None:
             return {"available": False}
         return {"available": True}
+
+    @staticmethod
+    def _pose_inventory_summary(
+        inventory: dict[str, tuple[int, ...]],
+        format_name: str,
+    ) -> dict[str, object]:
+        return {
+            "available": True,
+            "format": format_name,
+            "cameras": {
+                camera: {
+                    "frame_count": len(frames),
+                    "first_frame": frames[0],
+                    "last_frame": frames[-1],
+                }
+                for camera, frames in inventory.items()
+            },
+        }
 
     def _load_layer(
         self,
