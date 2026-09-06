@@ -15,6 +15,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 from app.domain.addresses import FrameAddress
 
 from .lru_cache import LruFrameCache
+from .video_sources import CameraVideoSource
 
 
 @dataclass(frozen=True)
@@ -154,28 +155,39 @@ class MultiViewFrameProvider(QObject):
 
     def __init__(self, cache_capacity: int = 20) -> None:
         super().__init__()
-        self._cache: LruFrameCache[tuple[str, str, int], object] = LruFrameCache(cache_capacity)
+        self._cache: LruFrameCache[tuple[str, str, str, str, int], object] = LruFrameCache(
+            cache_capacity
+        )
         self._workers: dict[str, _CameraDecodeThread] = {}
         self._retired_workers: list[_CameraDecodeThread] = []
         self._project_id = ""
-        self._videos: dict[str, Path] = {}
+        self._sources: dict[str, CameraVideoSource] = {}
         self._generation = 0
         self._prefetch_group = ""
         self._group_sequence = 0
         self._closed = False
 
-    def set_project(self, project_id: str, videos: dict[str, Path]) -> None:
+    def set_project(
+        self,
+        project_id: str,
+        sources: dict[str, CameraVideoSource | Path],
+    ) -> None:
         if not project_id.strip():
             raise ValueError("project_id must not be empty")
         self._generation += 1
         self._stop_workers(3000)
         self._project_id = project_id
-        self._videos = {camera: Path(path) for camera, path in videos.items()}
+        self._sources = {
+            camera: value
+            if isinstance(value, CameraVideoSource)
+            else CameraVideoSource(camera, Path(value), "original")
+            for camera, value in sources.items()
+        }
         self._cache.clear()
         self._prefetch_group = ""
         self._closed = False
-        for camera, video_path in self._videos.items():
-            worker = _CameraDecodeThread(camera, video_path)
+        for camera, source in self._sources.items():
+            worker = _CameraDecodeThread(camera, source.path)
             worker.result_ready.connect(self._on_frame_ready)
             worker.result_failed.connect(self._on_frame_failed)
             self._workers[camera] = worker
@@ -214,6 +226,9 @@ class MultiViewFrameProvider(QObject):
     def cache_size(self) -> int:
         return len(self._cache)
 
+    def source_for(self, camera: str) -> CameraVideoSource | None:
+        return self._sources.get(camera)
+
     def close(self) -> bool:
         if self._closed and not self._workers and not self._retired_workers:
             return True
@@ -246,7 +261,14 @@ class MultiViewFrameProvider(QObject):
         if worker is None:
             self.frame_failed.emit(address.camera, address.frame, "未配置该相机的视频文件")
             return
-        key = (self._project_id, address.camera, address.frame)
+        source = self._sources[address.camera]
+        key = (
+            self._project_id,
+            address.camera,
+            source.kind,
+            str(source.path),
+            address.frame,
+        )
         image = self._cache.get(key)
         if image is not None:
             self.frame_ready.emit(address.camera, address.frame, image)
@@ -263,7 +285,10 @@ class MultiViewFrameProvider(QObject):
     ) -> None:
         if project_id != self._project_id or generation != self._generation:
             return
-        self._cache.put((project_id, camera, frame), image)
+        source = self._sources.get(camera)
+        if source is None:
+            return
+        self._cache.put((project_id, camera, source.kind, str(source.path), frame), image)
         self.frame_ready.emit(camera, frame, image)
 
     def _on_frame_failed(

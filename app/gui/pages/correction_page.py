@@ -657,6 +657,10 @@ class CorrectionPage(QWidget):
         }
         self._request_visible_frames()
 
+    def refresh_video_frames(self) -> None:
+        """Request the current visible frames after video bindings change."""
+        self._request_visible_frames()
+
     def _request_visible_frames(self) -> None:
         for index, card in enumerate(self._view_cards):
             camera = str(card.property("camera") or "")

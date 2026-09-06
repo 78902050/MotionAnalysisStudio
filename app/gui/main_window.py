@@ -97,6 +97,7 @@ class MainWindow(QMainWindow):
         self,
         parent: QWidget | None = None,
         controller: ApplicationController | None = None,
+        frame_provider: MultiViewFrameProvider | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Motion Analysis Studio")
@@ -111,7 +112,7 @@ class MainWindow(QMainWindow):
         self.project: ProjectManager | None = self.controller.current_project
         self.quality_correction_service: QualityCorrectionService | None = None
         cache_capacity = self.settings.value("media/cache_capacity", 20, type=int)
-        self.frame_provider = MultiViewFrameProvider(
+        self.frame_provider = frame_provider or MultiViewFrameProvider(
             cache_capacity=max(4, min(512, cache_capacity))
         )
         self.controller.register_resource(self.frame_provider)
@@ -374,6 +375,8 @@ class MainWindow(QMainWindow):
         media_page = self._pages.get("media")
         if isinstance(media_page, MediaPage):
             media_page.set_project(project)
+        sources = VideoSourceResolver.resolve(project)
+        self.frame_provider.set_project(str(project.manifest["project_id"]), sources)
         synchronization_page = self._pages.get("synchronization")
         if isinstance(synchronization_page, SynchronizationPage):
             synchronization_page.set_project(project)
@@ -397,11 +400,6 @@ class MainWindow(QMainWindow):
             else:
                 correction_page.set_pose_inventory({})
                 correction_page.set_cameras(cameras)
-            videos = {
-                camera: source.path
-                for camera, source in VideoSourceResolver.resolve(project).items()
-            }
-            self.frame_provider.set_project(str(project.manifest["project_id"]), videos)
         for page_id in ("quality_2d", "quality_3d"):
             quality_page = self._pages.get(page_id)
             if isinstance(quality_page, (Quality2DPage, Quality3DPage)):
@@ -431,11 +429,11 @@ class MainWindow(QMainWindow):
     def _refresh_video_sources(self) -> None:
         if self.project is None:
             return
-        videos = {
-            camera: source.path
-            for camera, source in VideoSourceResolver.resolve(self.project).items()
-        }
-        self.frame_provider.set_project(str(self.project.manifest["project_id"]), videos)
+        sources = VideoSourceResolver.resolve(self.project)
+        self.frame_provider.set_project(str(self.project.manifest["project_id"]), sources)
+        correction_page = self._pages.get("correction_2d")
+        if isinstance(correction_page, CorrectionPage):
+            correction_page.refresh_video_frames()
 
     @Slot(object)
     def _pipeline_finished(self, result: object) -> None:
