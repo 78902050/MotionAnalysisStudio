@@ -49,6 +49,23 @@ class Pose2SimPipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_pipeline_commands(config, ("unknown",))
 
+    def test_pipeline_commands_use_selected_pose2sim_python_without_app_package(self) -> None:
+        config = Path("D:/项目/config/Config.toml")
+        python = Path("E:/tools/pose-env/Scripts/python.exe")
+
+        commands = build_pipeline_commands(
+            config,
+            ("triangulation",),
+            pose2sim_python=python,
+        )
+
+        command = commands["triangulation"]
+        self.assertEqual(command[0], str(python))
+        self.assertEqual(command[1], "-c")
+        self.assertIn("Pose2Sim", command[2])
+        self.assertEqual(command[-2:], ("triangulation", str(config)))
+        self.assertNotIn("app.main", command)
+
     def test_runner_exposes_incremental_log_and_per_stage_timing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -117,6 +134,8 @@ class Pose2SimPipelineTests(unittest.TestCase):
             self.assertEqual(calls, list(GENERAL_POSE2SIM_STAGES))
 
     def test_launcher_records_completed_stage_and_log_in_manifest(self) -> None:
+        recorded: dict[str, object] = {}
+
         class _ImmediateHandle:
             def __init__(self, result):
                 self.result = result
@@ -131,6 +150,7 @@ class Pose2SimPipelineTests(unittest.TestCase):
         class _Runner:
             def __init__(self, commands, allowed_stages, log_dir):
                 self.log_dir = log_dir
+                recorded["commands"] = commands
 
             def start(self, request, stages):
                 log_path = self.log_dir / request.payload["log_file"]
@@ -155,12 +175,19 @@ class Pose2SimPipelineTests(unittest.TestCase):
             project.path_for("config").write_text("[project]\nname = \"trial\"\n", encoding="utf-8")
             controller = ApplicationController()
             self.assertTrue(controller.open_project(project))
-            launcher = PipelineLauncher(controller, runner_factory=_Runner)
+            selected_python = Path("E:/pose-env/Scripts/python.exe")
+            launcher = PipelineLauncher(
+                controller,
+                runner_factory=_Runner,
+                pose2sim_python_provider=lambda: selected_python,
+            )
 
             handle = launcher.start(project, ("filtering",))
             result = handle.wait(3)
 
             self.assertEqual(result.status, "succeeded")
+            self.assertEqual(recorded["commands"]["filtering"][0], str(selected_python))
+            self.assertEqual(recorded["commands"]["filtering"][1], "-c")
             self.assertEqual(project.manifest["stages"]["filtering"]["status"], "completed")
             self.assertEqual(project.manifest["last_pipeline_run"]["failed_stage"], None)
             self.assertTrue(launcher.log_path_for(handle.task_id).is_file())

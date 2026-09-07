@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.project.manager import ProjectManager
@@ -9,11 +10,21 @@ from app.project.manager import ProjectManager
 from .video_sources import CameraVideoSource, VideoSourceKind
 
 
+@dataclass(frozen=True)
+class DirectoryBindingResult:
+    bound: tuple[CameraVideoSource, ...]
+    unmatched_cameras: tuple[str, ...]
+    ambiguous: dict[str, tuple[Path, ...]]
+    unmatched_files: tuple[Path, ...]
+
+
 class VideoBindingService:
     _FIELD_BY_KIND = {
         "original": "video_path",
         "pose2sim_overlay": "pose_video_path",
     }
+    _VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".m4v"}
+    _DERIVED_TOKENS = ("_pose", "_sync", "_tracked", "_calibration")
 
     @classmethod
     def bind(
@@ -34,6 +45,74 @@ class VideoBindingService:
             record["preferred_video_kind"] = kind
         project.save_manifest()
         return CameraVideoSource(camera, resolved, kind)
+
+    @classmethod
+    def bind_directory(
+        cls,
+        project: ProjectManager,
+        directory: Path,
+        kind: VideoSourceKind = "original",
+    ) -> DirectoryBindingResult:
+        field = cls._field(kind)
+        directory = Path(directory).resolve()
+        if not directory.is_dir():
+            raise FileNotFoundError(f"video directory not found: {directory}")
+        files = tuple(
+            sorted(
+                (
+                    path.resolve()
+                    for path in directory.iterdir()
+                    if path.is_file()
+                    and path.suffix.casefold() in cls._VIDEO_SUFFIXES
+                    and not (
+                        kind == "original"
+                        and any(token in path.stem.casefold() for token in cls._DERIVED_TOKENS)
+                    )
+                ),
+                key=lambda path: path.name.casefold(),
+            )
+        )
+        cameras = project.manifest.get("cameras", [])
+        records = (
+            [record for record in cameras if isinstance(record, dict)]
+            if isinstance(cameras, list)
+            else []
+        )
+        bound: list[CameraVideoSource] = []
+        unmatched: list[str] = []
+        ambiguous: dict[str, tuple[Path, ...]] = {}
+        used: set[Path] = set()
+        for record in records:
+            camera = str(record.get("camera_id", "")).strip()
+            if not camera:
+                continue
+            prefix = camera.casefold()
+            matches = tuple(
+                path
+                for path in files
+                if path.stem.casefold() == prefix
+                or path.stem.casefold().startswith(
+                    (f"{prefix}_", f"{prefix}-", f"{prefix} ")
+                )
+            )
+            if len(matches) == 1:
+                record[field] = str(matches[0])
+                record["preferred_video_kind"] = kind
+                source = CameraVideoSource(camera, matches[0], kind)
+                bound.append(source)
+                used.add(matches[0])
+            elif not matches:
+                unmatched.append(camera)
+            else:
+                ambiguous[camera] = matches
+        if bound:
+            project.save_manifest()
+        return DirectoryBindingResult(
+            tuple(bound),
+            tuple(unmatched),
+            ambiguous,
+            tuple(path for path in files if path not in used),
+        )
 
     @classmethod
     def clear(cls, project: ProjectManager, camera: str, kind: VideoSourceKind) -> None:

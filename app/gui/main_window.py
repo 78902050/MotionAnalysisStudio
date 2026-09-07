@@ -107,8 +107,15 @@ class MainWindow(QMainWindow):
         self.resize(1120, 720)
         self.settings = QSettings("MotionAnalysisStudio", "MotionAnalysisStudio")
         self.controller = controller or ApplicationController()
-        self._correction_rerun_launcher = CorrectionRerunLauncher(self.controller)
-        self.pipeline_launcher = PipelineLauncher(self.controller)
+        pose2sim_python_provider = lambda: self._configured_pose2sim_python()
+        self._correction_rerun_launcher = CorrectionRerunLauncher(
+            self.controller,
+            pose2sim_python_provider=pose2sim_python_provider,
+        )
+        self.pipeline_launcher = PipelineLauncher(
+            self.controller,
+            pose2sim_python_provider=pose2sim_python_provider,
+        )
         if not self.controller.has_correction_rerun_handler():
             self.controller.set_correction_rerun_handler(self._correction_rerun_launcher)
         self.project: ProjectManager | None = self.controller.current_project
@@ -133,6 +140,10 @@ class MainWindow(QMainWindow):
         del application
         self._build_ui()
         self._restore_layout()
+
+    def _configured_pose2sim_python(self) -> Path | None:
+        value = str(self.settings.value("tools/pose2sim_path", "")).strip()
+        return Path(value) if value else None
 
     def _build_ui(self) -> None:
         root = QWidget()

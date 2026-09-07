@@ -20,8 +20,17 @@ def build_stage_commands(
     *,
     executable: Path | None = None,
     frozen: bool | None = None,
+    pose2sim_python: Path | None = None,
 ) -> dict[str, tuple[str, ...]]:
     """Build commands that work both from Python and from the packaged executable."""
+    if pose2sim_python is not None:
+        from .pipeline_launcher import build_pipeline_commands
+
+        return build_pipeline_commands(
+            config_path,
+            CORRECTION_RERUN_STAGES,
+            pose2sim_python=pose2sim_python,
+        )
     executable = Path(executable or sys.executable)
     is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else bool(frozen)
     prefix = (str(executable),) if is_frozen else (str(executable), "-m", "app.main")
@@ -63,9 +72,11 @@ class CorrectionRerunLauncher:
         controller: ApplicationController,
         *,
         runner_factory: Callable[..., Any] = PipelineRunner,
+        pose2sim_python_provider: Callable[[], Path | None] | None = None,
     ) -> None:
         self.controller = controller
         self.runner_factory = runner_factory
+        self.pose2sim_python_provider = pose2sim_python_provider or (lambda: None)
 
     def __call__(self, project: ProjectManager, session_id: str) -> bool:
         project_id = str(project.manifest["project_id"])
@@ -81,7 +92,10 @@ class CorrectionRerunLauncher:
             return False
 
         config_path = project.path_for("config")
-        commands = build_stage_commands(config_path)
+        commands = build_stage_commands(
+            config_path,
+            pose2sim_python=self.pose2sim_python_provider(),
+        )
         request = TaskRequest(
             project_id,
             generation,

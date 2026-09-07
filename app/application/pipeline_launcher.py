@@ -25,6 +25,7 @@ def build_pipeline_commands(
     *,
     executable: Path | None = None,
     frozen: bool | None = None,
+    pose2sim_python: Path | None = None,
 ) -> dict[str, tuple[str, ...]]:
     selected = tuple(stages)
     if not selected:
@@ -32,6 +33,16 @@ def build_pipeline_commands(
     invalid = [stage for stage in selected if stage not in GENERAL_POSE2SIM_STAGES]
     if invalid:
         raise ValueError(f"Pose2Sim stages are not allowed: {', '.join(invalid)}")
+    if pose2sim_python is not None:
+        python = Path(pose2sim_python)
+        script = (
+            "import sys; from Pose2Sim import Pose2Sim as module; "
+            "getattr(module, sys.argv[1])(config=sys.argv[2])"
+        )
+        return {
+            stage: (str(python), "-c", script, stage, str(Path(config_path)))
+            for stage in selected
+        }
     executable = Path(executable or sys.executable)
     is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else bool(frozen)
     prefix = (str(executable),) if is_frozen else (str(executable), "-m", "app.main")
@@ -53,14 +64,20 @@ class PipelineLauncher:
         controller: ApplicationController,
         *,
         runner_factory: Callable[..., Any] = PipelineRunner,
+        pose2sim_python_provider: Callable[[], Path | None] | None = None,
     ) -> None:
         self.controller = controller
         self.runner_factory = runner_factory
+        self.pose2sim_python_provider = pose2sim_python_provider or (lambda: None)
         self._log_paths: dict[str, Path] = {}
 
     def start(self, project: ProjectManager, stages: Iterable[str]) -> TaskHandle:
         selected = tuple(stages)
-        commands = build_pipeline_commands(project.path_for("config"), selected)
+        commands = build_pipeline_commands(
+            project.path_for("config"),
+            selected,
+            pose2sim_python=self.pose2sim_python_provider(),
+        )
         config_document = ConfigDocument.open(project.path_for("config"))
         validation = config_document.validate(config_document.text)
         if not validation.valid:

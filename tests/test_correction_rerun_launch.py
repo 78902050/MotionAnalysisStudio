@@ -9,6 +9,20 @@ from app.adapters.pose2sim.runner import RunResult
 
 
 class CorrectionRerunLaunchTests(unittest.TestCase):
+    def test_stage_commands_use_selected_pose2sim_python(self) -> None:
+        from app.application.correction_rerun_launcher import build_stage_commands
+
+        python = Path("E:/pose-env/Scripts/python.exe")
+        commands = build_stage_commands(
+            Path("D:/项目/config/Config.toml"),
+            pose2sim_python=python,
+        )
+
+        command = commands["triangulation"]
+        self.assertEqual(command[0], str(python))
+        self.assertEqual(command[1], "-c")
+        self.assertEqual(command[-2:], ("triangulation", "D:\\项目\\config\\Config.toml"))
+
     def test_development_commands_use_application_stage_entrypoint(self) -> None:
         from app.application.correction_rerun_launcher import build_stage_commands
 
@@ -101,7 +115,12 @@ class CorrectionRerunLaunchTests(unittest.TestCase):
             self.assertTrue(controller.open_project(project))
             handles = []
             controller.add_task_listener(handles.append)
-            launcher = CorrectionRerunLauncher(controller, runner_factory=RecordingRunner)
+            selected_python = Path("E:/pose-env/Scripts/python.exe")
+            launcher = CorrectionRerunLauncher(
+                controller,
+                runner_factory=RecordingRunner,
+                pose2sim_python_provider=lambda: selected_python,
+            )
 
             self.assertTrue(launcher(project, "session-1"))
             result = handles[0].wait(3)
@@ -109,6 +128,9 @@ class CorrectionRerunLaunchTests(unittest.TestCase):
             self.assertEqual(result.status, "succeeded")
             self.assertEqual(recorded["stages"], CORRECTION_RERUN_STAGES)
             self.assertNotIn("poseEstimation", recorded["commands"])
+            self.assertTrue(
+                all(command[0] == str(selected_python) for command in recorded["commands"].values())
+            )
             self.assertTrue(
                 all(
                     project.manifest["stages"][stage]["status"] == "completed"

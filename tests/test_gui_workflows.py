@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QFileDialog, QPushButton
 
 from app.application.controller import ApplicationController
 from app.gui.pages.media_page import MediaPage
@@ -73,27 +73,54 @@ class GuiWorkflowTests(unittest.TestCase):
             self.assertTrue(controller.shutdown(dirty_decision="discard"))
             page.close()
 
-    def test_settings_rejects_missing_tool_path_and_persists_valid_values(self) -> None:
+    def test_settings_selects_installation_folders_and_persists_resolved_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             settings = QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
             page = SettingsPage(settings=settings)
-            page.pose2sim_path.setText(str(root / "missing.exe"))
-
-            self.assertFalse(page.save_settings())
-            self.assertFalse(settings.contains("tools/pose2sim_path"))
-
-            tool = root / "python.exe"
-            tool.write_bytes(b"")
-            page.pose2sim_path.setText(str(tool))
-            page.caliscope_path.setText("")
+            pose_root = root / "pose-env"
+            python = pose_root / "Scripts" / "python.exe"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            package = pose_root / "Lib" / "site-packages" / "Pose2Sim"
+            package.mkdir(parents=True)
+            (package / "Pose2Sim.py").touch()
+            caliscope_root = root / "caliscope-env"
+            caliscope = caliscope_root / "Scripts" / "caliscope.exe"
+            caliscope.parent.mkdir(parents=True)
+            caliscope.touch()
+            page.pose2sim_path.setText(str(pose_root))
+            page.caliscope_path.setText(str(caliscope_root))
             page.cache_capacity.setValue(48)
             page.nudge_step.setValue(2.5)
 
             self.assertTrue(page.save_settings())
-            self.assertEqual(settings.value("tools/pose2sim_path"), str(tool))
+            self.assertEqual(settings.value("tools/pose2sim_path"), str(python.resolve()))
+            self.assertEqual(settings.value("tools/caliscope_path"), str(caliscope.resolve()))
+            self.assertEqual(settings.value("tools/pose2sim_directory"), str(pose_root.resolve()))
             self.assertEqual(settings.value("media/cache_capacity", type=int), 48)
             self.assertEqual(settings.value("correction/nudge_step", type=float), 2.5)
+            page.close()
+
+    def test_settings_browse_control_uses_a_folder_dialog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = QSettings(
+                str(Path(directory) / "settings.ini"),
+                QSettings.Format.IniFormat,
+            )
+            page = SettingsPage(settings=settings)
+            button = page.findChild(QPushButton, "settings_pose2sim_browse")
+
+            self.assertIsNotNone(button)
+            if button is not None:
+                with patch.object(
+                    QFileDialog,
+                    "getExistingDirectory",
+                    return_value=directory,
+                ) as choose_directory:
+                    button.click()
+                choose_directory.assert_called_once()
+                self.assertEqual(page.pose2sim_path.text(), directory)
             page.close()
 
     def test_project_report_export_uses_task_supervisor(self) -> None:

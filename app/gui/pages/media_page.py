@@ -123,6 +123,7 @@ class MediaPage(QWidget):
         self.scan_count = 0
         self._scanned_project_id = ""
         self._handle: TaskHandle | None = None
+        self._pending_import_summary = ""
         self._timer = QTimer(self)
         self._timer.setInterval(25)
         self._timer.timeout.connect(self._poll)
@@ -147,10 +148,14 @@ class MediaPage(QWidget):
         self.refresh_button.setObjectName("media_refresh_button")
         self.refresh_button.clicked.connect(lambda: self.scan(force=True))
         actions.addWidget(self.refresh_button)
-        self.bind_original_button = QPushButton("绑定原视频")
+        self.bind_original_button = QPushButton("为选中相机导入原视频")
         self.bind_original_button.setObjectName("media_bind_original")
         self.bind_original_button.clicked.connect(lambda: self._choose_and_bind("original"))
         actions.addWidget(self.bind_original_button)
+        self.import_original_folder_button = QPushButton("批量导入原视频文件夹")
+        self.import_original_folder_button.setObjectName("media_import_original_folder")
+        self.import_original_folder_button.clicked.connect(self._choose_original_folder)
+        actions.addWidget(self.import_original_folder_button)
         self.bind_pose_button = QPushButton("绑定 Pose2Sim 视频")
         self.bind_pose_button.setObjectName("media_bind_pose2sim")
         self.bind_pose_button.clicked.connect(lambda: self._choose_and_bind("pose2sim_overlay"))
@@ -289,7 +294,11 @@ class MediaPage(QWidget):
     def _finish(self, records: tuple[MediaRecord, ...]) -> None:
         self.model.set_records(records)
         issues = sum(bool(record.issue) for record in records)
-        self.status.setText(f"已读取 {len(records)} 台相机；映射问题 {issues} 个")
+        summary = f"已读取 {len(records)} 台相机；映射问题 {issues} 个"
+        if self._pending_import_summary:
+            summary = f"{self._pending_import_summary}；{summary}"
+            self._pending_import_summary = ""
+        self.status.setText(summary)
 
     def _selected_camera(self) -> str | None:
         index = self.table.currentIndex()
@@ -316,6 +325,39 @@ class MediaPage(QWidget):
             QMessageBox.warning(self, "视频绑定失败", str(exc))
             return
         self.sources_changed.emit()
+        self._scanned_project_id = ""
+        self.scan(force=True)
+
+    def _choose_original_folder(self) -> None:
+        if self.project is None:
+            self.status.setText("请先打开项目")
+            return
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "选择原视频文件夹",
+            str(self.project.root),
+        )
+        if not directory:
+            return
+        try:
+            result = VideoBindingService.bind_directory(
+                self.project,
+                Path(directory),
+                "original",
+            )
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "原视频导入失败", str(exc))
+            return
+        parts = [f"已绑定 {len(result.bound)} 台相机"]
+        if result.unmatched_cameras:
+            parts.append("未匹配：" + "、".join(result.unmatched_cameras))
+        if result.ambiguous:
+            parts.append("多个候选：" + "、".join(result.ambiguous))
+        if result.unmatched_files:
+            parts.append(f"未使用视频 {len(result.unmatched_files)} 个")
+        self._pending_import_summary = "；".join(parts)
+        if result.bound:
+            self.sources_changed.emit()
         self._scanned_project_id = ""
         self.scan(force=True)
 

@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -84,6 +85,60 @@ class MediaBindingTests(unittest.TestCase):
                 VideoBindingService.bind(project, "cam99", Path(directory) / "x.mp4", "original")
             with self.assertRaises(FileNotFoundError):
                 VideoBindingService.bind(project, "cam01", Path(directory) / "x.mp4", "original")
+
+    def test_folder_import_binds_unique_camera_matches_without_guessing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = self._project(root)
+            videos = root / "源视频"
+            videos.mkdir()
+            cam01 = videos / "cam01.mp4"
+            cam01.touch()
+            (videos / "cam01_pose.mp4").touch()
+            (videos / "cam02-front.mp4").touch()
+            (videos / "cam02-side.mp4").touch()
+            (videos / "other.mp4").touch()
+
+            result = VideoBindingService.bind_directory(project, videos, "original")
+
+            self.assertEqual(tuple(source.camera for source in result.bound), ("cam01",))
+            self.assertEqual(result.bound[0].path, cam01.resolve())
+            self.assertEqual(result.unmatched_cameras, ())
+            self.assertEqual(tuple(result.ambiguous), ("cam02",))
+            self.assertEqual(project.manifest["cameras"][0]["video_path"], str(cam01.resolve()))
+            self.assertNotIn("video_path", project.manifest["cameras"][1])
+
+    def test_media_page_exposes_single_and_folder_original_video_imports(self) -> None:
+        page = MediaPage()
+
+        self.assertEqual(page.bind_original_button.text(), "为选中相机导入原视频")
+        self.assertIsNotNone(
+            page.findChild(type(page.bind_original_button), "media_import_original_folder")
+        )
+        page.close()
+
+    def test_folder_import_button_binds_matching_videos_and_reports_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = self._project(root)
+            videos = root / "原始录像"
+            videos.mkdir()
+            (videos / "cam01.mp4").touch()
+            (videos / "cam02.mp4").touch()
+            page = MediaPage(project)
+
+            with patch(
+                "app.gui.pages.media_page.QFileDialog.getExistingDirectory",
+                return_value=str(videos),
+            ) as choose_directory:
+                page.import_original_folder_button.click()
+
+            choose_directory.assert_called_once()
+            self.assertTrue(
+                all("video_path" in record for record in project.manifest["cameras"])
+            )
+            self.assertIn("已绑定 2 台相机", page.status.text())
+            page.close()
 
 
 if __name__ == "__main__":

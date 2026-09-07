@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.external_tools.discovery import ExternalToolDiscovery
+
 from ..layout import make_scrollable_panel
 
 
@@ -49,8 +51,18 @@ class SettingsPage(QWidget):
         layout.addWidget(description)
 
         form = QFormLayout()
-        self.pose2sim_path = self._path_row(form, "Pose2Sim 可执行文件", "settings_pose2sim_path")
-        self.caliscope_path = self._path_row(form, "Caliscope 可执行文件", "settings_caliscope_path")
+        self.pose2sim_path = self._path_row(
+            form,
+            "Pose2Sim 安装文件夹",
+            "settings_pose2sim_path",
+            "Pose2Sim",
+        )
+        self.caliscope_path = self._path_row(
+            form,
+            "Caliscope 安装文件夹",
+            "settings_caliscope_path",
+            "Caliscope",
+        )
         self.cache_capacity = QSpinBox()
         self.cache_capacity.setObjectName("settings_cache_capacity")
         self.cache_capacity.setRange(4, 512)
@@ -85,50 +97,99 @@ class SettingsPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
-    def _path_row(self, form: QFormLayout, title: str, object_name: str) -> QLineEdit:
+    def _path_row(
+        self,
+        form: QFormLayout,
+        title: str,
+        object_name: str,
+        tool_name: str,
+    ) -> QLineEdit:
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         edit = QLineEdit()
         edit.setObjectName(object_name)
-        edit.setPlaceholderText("留空：使用当前程序环境")
-        button = QPushButton("浏览")
-        button.clicked.connect(lambda: self._choose_path(edit))
+        edit.setPlaceholderText("留空：使用程序自带环境；也可粘贴旧的可执行文件路径")
+        button = QPushButton("选择文件夹")
+        button.setObjectName(f"settings_{tool_name.casefold()}_browse")
+        button.clicked.connect(lambda: self._choose_path(edit, tool_name))
         layout.addWidget(edit, 1)
         layout.addWidget(button)
         form.addRow(title, row)
         return edit
 
-    def _choose_path(self, target: QLineEdit) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "选择可执行文件")
+    def _choose_path(self, target: QLineEdit, tool_name: str) -> None:
+        current = Path(target.text().strip()) if target.text().strip() else Path()
+        start = current if current.is_dir() else current.parent if current.is_file() else Path()
+        path = QFileDialog.getExistingDirectory(
+            self,
+            f"选择 {tool_name} 安装文件夹",
+            str(start),
+        )
         if path:
             target.setText(path)
 
     def load_settings(self) -> None:
-        self.pose2sim_path.setText(str(self.settings.value("tools/pose2sim_path", "")))
-        self.caliscope_path.setText(str(self.settings.value("tools/caliscope_path", "")))
+        self.pose2sim_path.setText(self._displayed_installation("pose2sim"))
+        self.caliscope_path.setText(self._displayed_installation("caliscope"))
         self.cache_capacity.setValue(self.settings.value("media/cache_capacity", 20, type=int))
         self.nudge_step.setValue(self.settings.value("correction/nudge_step", 1.0, type=float))
         self.status.setText("设置已载入")
 
     def save_settings(self) -> bool:
-        paths = {
-            "tools/pose2sim_path": self.pose2sim_path.text().strip(),
-            "tools/caliscope_path": self.caliscope_path.text().strip(),
+        selections = {
+            "pose2sim": self.pose2sim_path.text().strip(),
+            "caliscope": self.caliscope_path.text().strip(),
         }
-        for name, value in paths.items():
-            if value and not Path(value).is_file():
-                label = "Pose2Sim" if "pose2sim" in name else "Caliscope"
-                self.status.setText(f"{label} 路径不存在或不是文件：{value}")
+        resolved: dict[str, tuple[str, str]] = {}
+        for name, value in selections.items():
+            if not value:
+                continue
+            try:
+                installation = (
+                    ExternalToolDiscovery.resolve_pose2sim(Path(value))
+                    if name == "pose2sim"
+                    else ExternalToolDiscovery.resolve_caliscope(Path(value))
+                )
+            except (OSError, ValueError) as exc:
+                self.status.setText(str(exc))
                 return False
-        for name, value in paths.items():
-            self.settings.setValue(name, value)
+            resolved[name] = (
+                str(installation.installation_directory),
+                str(installation.executable),
+            )
+        for name in selections:
+            directory, executable = resolved.get(name, ("", ""))
+            self.settings.setValue(f"tools/{name}_directory", directory)
+            self.settings.setValue(f"tools/{name}_path", executable)
         self.settings.setValue("media/cache_capacity", self.cache_capacity.value())
         self.settings.setValue("correction/nudge_step", self.nudge_step.value())
         self.settings.sync()
-        self.status.setText("设置已保存；缓存容量将在下次启动时生效")
+        detected = "；".join(
+            f"{'Pose2Sim' if name == 'pose2sim' else 'Caliscope'}：{executable}"
+            for name, (_directory, executable) in resolved.items()
+        )
+        suffix = f"；已识别 {detected}" if detected else "；外部工具使用程序自带环境"
+        self.status.setText(f"设置已保存；缓存容量将在下次启动时生效{suffix}")
         self.settings_saved.emit()
         return True
+
+    def _displayed_installation(self, name: str) -> str:
+        directory = str(self.settings.value(f"tools/{name}_directory", "")).strip()
+        if directory:
+            return directory
+        legacy = str(self.settings.value(f"tools/{name}_path", "")).strip()
+        if not legacy:
+            return ""
+        path = Path(legacy)
+        if path.is_file():
+            directory = (
+                path.parent.parent
+                if path.parent.name.casefold() == "scripts"
+                else path.parent
+            )
+            return str(directory)
+        return legacy
 
     def reset_layout(self) -> None:
         for key in (
