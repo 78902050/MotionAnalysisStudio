@@ -60,7 +60,7 @@ class VideoSourceResolverTests(unittest.TestCase):
             root = Path(directory) / "中文项目"
             project = self._project(root, video_path="videos/cam01.mp4")
             video = root / "videos" / "cam01.mp4"
-            video.parent.mkdir()
+            video.parent.mkdir(exist_ok=True)
             video.touch()
 
             self.assertEqual(VideoSourceResolver.resolve(project)["cam01"].path, video.resolve())

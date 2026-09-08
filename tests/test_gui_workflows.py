@@ -44,7 +44,7 @@ class GuiWorkflowTests(unittest.TestCase):
             root = Path(directory)
             project = ProjectManager.create(root / "project", "媒体项目")
             video = project.root / "videos" / "cam01.mp4"
-            video.parent.mkdir()
+            video.parent.mkdir(exist_ok=True)
             video.write_bytes(b"fixture")
             project.manifest["cameras"] = [
                 {"camera_id": "cam01", "video_path": "videos/cam01.mp4"},

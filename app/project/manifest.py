@@ -25,6 +25,7 @@ DEFAULT_PATHS: dict[str, str] = {
 
 PROJECT_DIRECTORIES: tuple[str, ...] = (
     "config",
+    "videos",
     "calibration/source",
     "calibration/normalized",
     "calibration/reports",
