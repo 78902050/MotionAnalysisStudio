@@ -441,6 +441,7 @@ class MediaPage(QWidget):
             "video-import",
             {"count": len(plan.items)},
         )
+        progress_queue = self._import_progress
 
         def work(token: CancellationToken) -> VideoImportResult:
             return VideoImportService.execute(
@@ -448,7 +449,7 @@ class MediaPage(QWidget):
                 plan,
                 replace_existing=replace_existing,
                 token=token,
-                progress=lambda completed, total, path: self._import_progress.put(
+                progress=lambda completed, total, path: progress_queue.put(
                     (completed, total, path.name)
                 ),
             )

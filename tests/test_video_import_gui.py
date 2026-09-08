@@ -191,6 +191,47 @@ class VideoImportGuiTests(unittest.TestCase):
                 page._import_progress.get_nowait()
             page.close()
 
+    def test_late_progress_from_cancelled_project_stays_in_old_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            first = ProjectManager.create(base / "first", "first")
+            second = ProjectManager.create(base / "second", "second")
+            source = base / "cam01.mp4"
+            source.write_bytes(b"video")
+            controller = ApplicationController()
+            self.assertTrue(controller.open_project(first))
+            page = MediaPage(controller=controller)
+            page.set_project(first)
+            self._wait_for_idle(page)
+            started = threading.Event()
+            release = threading.Event()
+
+            def delayed_progress(project_arg, plan, *, replace_existing, token, progress):
+                del project_arg, replace_existing
+                started.set()
+                release.wait(1)
+                progress(1, len(plan.items), plan.items[0].source)
+                token.raise_if_cancelled()
+
+            with patch(
+                "app.gui.pages.media_page.QFileDialog.getOpenFileNames",
+                return_value=([str(source)], "视频文件"),
+            ), patch(
+                "app.gui.pages.media_page.VideoImportService.execute",
+                side_effect=delayed_progress,
+            ):
+                page.import_videos_button.click()
+                self.assertTrue(started.wait(1))
+                old_queue = page._import_progress
+                page.set_project(second)
+                self.assertIsNot(page._import_progress, old_queue)
+                release.set()
+                self.assertTrue(controller.supervisor.wait_for_shutdown(2000))
+
+            with self.assertRaises(Empty):
+                page._import_progress.get_nowait()
+            page.close()
+
     def test_small_window_keeps_media_actions_scrollable(self) -> None:
         page = MediaPage()
         page.resize(620, 480)
