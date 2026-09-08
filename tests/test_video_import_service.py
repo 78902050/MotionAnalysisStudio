@@ -201,6 +201,20 @@ class VideoImportServiceTests(unittest.TestCase):
             self.assertFalse((root / "escaped.mp4").exists())
             self.assertEqual(tuple((root / "videos").iterdir()), ())
 
+    def test_plan_rejects_path_like_camera_id_even_when_it_resolves_inside_videos(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "project"
+            project = ProjectManager.create(root, "Video import")
+            project.manifest["cameras"] = [{"camera_id": r"nested\..\cam01"}]
+            source = base / "clip.mp4"
+            source.write_bytes(b"video")
+
+            with self.assertRaisesRegex(ValueError, "unsafe camera ID"):
+                VideoImportService.plan(project, [source])
+
+            self.assertEqual(tuple((root / "videos").iterdir()), ())
+
     def test_execute_copies_chinese_path_and_binds_project_relative_video(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

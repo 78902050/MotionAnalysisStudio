@@ -34,6 +34,8 @@ def normalize_camera_name(name: str) -> str:
 
 
 def _camera_destination(project: ProjectManager, camera: str, suffix: str) -> Path:
+    if not camera or camera in {".", ".."} or "/" in camera or "\\" in camera:
+        raise ValueError(f"unsafe camera ID for video destination: {camera!r}")
     videos_root = (project.root / "videos").resolve()
     destination = (videos_root / f"{camera}{suffix}").resolve()
     if destination.parent != videos_root:
