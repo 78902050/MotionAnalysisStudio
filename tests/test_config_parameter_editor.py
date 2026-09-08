@@ -43,15 +43,21 @@ class ConfigParameterEditorTests(unittest.TestCase):
         editor.set_text(CONFIG)
         frequency = editor.editor_for(("pose", "det_frequency"))
         multi_person = editor.editor_for(("project", "multi_person"))
+        device = editor.editor_for(("pose", "device"))
 
         self.assertIsInstance(frequency, QLineEdit)
         frequency.setText("2")
         frequency.editingFinished.emit()
         self.assertIsInstance(multi_person, QComboBox)
         multi_person.setCurrentText("true")
+        self.assertIsInstance(device, QComboBox)
+        device.setCurrentText("CPU")
 
         self.assertIn("det_frequency = 2", editor.text())
         self.assertIn("multi_person = true", editor.text())
+        self.assertIn('device = "CPU"', editor.text())
+        self.assertEqual(editor.parameter_tree.columnCount(), 3)
+        self.assertIn("int", editor.item_for(("pose", "det_frequency")).text(2))
         editor.close()
 
     def test_custom_parameter_and_chinese_help_persist_for_project(self) -> None:

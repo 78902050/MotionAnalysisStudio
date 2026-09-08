@@ -226,7 +226,11 @@ def _verify_existing_results_trial(
     quality_metrics = report.metrics()
     config = ConfigDocument.open(project.path_for("config"))
     config_validation = config.validate(config.text)
-    commands = build_pipeline_commands(project.path_for("config"), GENERAL_POSE2SIM_STAGES)
+    commands = build_pipeline_commands(
+        project.path_for("config"),
+        GENERAL_POSE2SIM_STAGES,
+        project_root=project.root,
+    )
     settings_inspection = CaliscopeSettingsDiagnostic.inspect(
         CaliscopeSettingsDiagnostic.default_path()
     )

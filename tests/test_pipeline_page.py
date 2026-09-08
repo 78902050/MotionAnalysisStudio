@@ -121,6 +121,7 @@ class PipelinePageTests(unittest.TestCase):
         page.show()
         self.application.processEvents()
 
+        self.assertLessEqual(page.width(), 620)
         self.assertTrue(page.findChildren(QSplitter))
         areas = page.findChildren(QScrollArea)
         self.assertTrue(areas)

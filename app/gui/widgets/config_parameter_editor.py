@@ -6,6 +6,7 @@ from pathlib import Path
 
 import tomlkit
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
@@ -21,6 +22,18 @@ from PySide6.QtWidgets import (
 from app.pose2sim.config_model import ConfigModel, ConfigParameter
 from app.pose2sim.custom_help_store import CustomHelpStore
 from app.pose2sim.parameter_help_zh import help_for, known_parameter_paths
+
+
+_ENUM_PATHS = frozenset(
+    {
+        ("pose", "device"),
+        ("pose", "backend"),
+        ("pose", "tracking_mode"),
+        ("calibration", "calibration_type"),
+        ("triangulation", "interpolation"),
+        ("triangulation", "sections_to_keep"),
+    }
+)
 
 
 class ConfigParameterEditor(QWidget):
@@ -48,8 +61,8 @@ class ConfigParameterEditor(QWidget):
         parameter_layout.setContentsMargins(0, 6, 0, 0)
         self.parameter_tree = QTreeWidget()
         self.parameter_tree.setObjectName("pipeline_parameter_tree")
-        self.parameter_tree.setColumnCount(2)
-        self.parameter_tree.setHeaderLabels(("参数", "值"))
+        self.parameter_tree.setColumnCount(3)
+        self.parameter_tree.setHeaderLabels(("参数", "值", "类型 / 单位"))
         self.parameter_tree.setAlternatingRowColors(True)
         self.parameter_tree.setRootIsDecorated(True)
         self.parameter_tree.setColumnWidth(0, 230)
@@ -165,10 +178,17 @@ class ConfigParameterEditor(QWidget):
             parent = self._section_item(parameter.path[:-1], sections)
             item = QTreeWidgetItem(parent)
             item.setText(0, f"ⓘ {parameter.path[-1]}")
+            item.setForeground(0, QBrush(QColor("#67e8f9")))
             item.setData(0, Qt.ItemDataRole.UserRole, parameter.path)
             tooltip = help_for(parameter.path, self._custom_help).tooltip()
             item.setToolTip(0, tooltip)
             item.setToolTip(1, tooltip)
+            guidance = help_for(parameter.path, self._custom_help)
+            type_text = parameter.value_type
+            if guidance.unit:
+                type_text = f"{type_text} / {guidance.unit}"
+            item.setText(2, type_text)
+            item.setToolTip(2, tooltip)
             self._items[parameter.path] = item
             editor = self._make_editor(parameter)
             self._editors[parameter.path] = editor
@@ -210,6 +230,17 @@ class ConfigParameterEditor(QWidget):
             editor.setCurrentText("true" if parameter.value else "false")
             editor.currentTextChanged.connect(
                 lambda value, path=parameter.path: self._commit_value(path, value)
+            )
+            return editor
+
+        if parameter.path in _ENUM_PATHS:
+            editor = QComboBox()
+            editor.addItems(help_for(parameter.path, self._custom_help).choices)
+            editor.setCurrentText(str(parameter.value))
+            editor.currentTextChanged.connect(
+                lambda value, path=parameter.path: self._commit_value(
+                    path, self._toml_literal(value)
+                )
             )
             return editor
 
