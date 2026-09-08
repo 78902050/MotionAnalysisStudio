@@ -59,6 +59,26 @@ class ConfigDocument:
     def has_unsaved_changes(self, text: str) -> bool:
         return text != self._text
 
+    def import_file(
+        self,
+        source: Path,
+        reason: str = "导入 Config.toml",
+    ) -> ConfigSaveResult:
+        source = Path(source).resolve()
+        if not source.is_file():
+            raise FileNotFoundError(f"Config.toml 文件不存在：{source}")
+        try:
+            text = source.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ConfigSyntaxError(f"Config.toml 不是 UTF-8：{exc}") from exc
+        validation = self.validate(text)
+        if not validation.valid:
+            raise ConfigSyntaxError(validation.message)
+        if source == self.path.resolve():
+            self._text = text
+            return ConfigSaveResult(False, None, reason)
+        return self.save(text, reason)
+
     def reload(self) -> str:
         try:
             text = self.path.read_text(encoding="utf-8")

@@ -66,6 +66,44 @@ class Pose2SimConfigDocumentTests(unittest.TestCase):
 
             self.assertEqual(path.read_text(encoding="utf-8"), original)
 
+    def test_import_file_replaces_project_copy_without_changing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "project" / "config" / "Config.toml"
+            path.parent.mkdir(parents=True)
+            original = "[project]\nname = \"old\"\n"
+            imported = "# imported\n[project]\nname = \"new\"\n"
+            path.write_text(original, encoding="utf-8")
+            source = root / "外部配置" / "Config.toml"
+            source.parent.mkdir()
+            source.write_text(imported, encoding="utf-8")
+            source_before = source.read_bytes()
+            document = ConfigDocument.open(path)
+
+            result = document.import_file(source)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), imported)
+            self.assertEqual(source.read_bytes(), source_before)
+            self.assertIsNotNone(result.backup_path)
+            self.assertEqual(result.backup_path.read_text(encoding="utf-8"), original)
+
+    def test_invalid_import_does_not_change_project_copy_or_create_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "config" / "Config.toml"
+            path.parent.mkdir()
+            original = "[project]\nname = \"safe\"\n"
+            path.write_text(original, encoding="utf-8")
+            source = root / "invalid.toml"
+            source.write_text("[project\n", encoding="utf-8")
+            document = ConfigDocument.open(path)
+
+            with self.assertRaises(ConfigSyntaxError):
+                document.import_file(source)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(path.parent.glob("backups/*")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

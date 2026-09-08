@@ -6,10 +6,13 @@ from .config_document import (
     ConfigSyntaxError,
     ConfigValidation,
 )
+from .config_model import ConfigModel, ConfigParameter
 
 __all__ = [
     "ConfigDocument",
     "ConfigSaveResult",
     "ConfigSyntaxError",
     "ConfigValidation",
+    "ConfigModel",
+    "ConfigParameter",
 ]

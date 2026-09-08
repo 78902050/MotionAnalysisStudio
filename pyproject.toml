@@ -7,7 +7,7 @@ name = "motion-analysis-studio"
 version = "0.1.0"
 description = "A recoverable multi-camera motion analysis desktop application"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["tomlkit>=0.13,<1"]
 
 [project.optional-dependencies]
 desktop = ["PySide6>=6.6"]
