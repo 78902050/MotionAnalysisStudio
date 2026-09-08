@@ -208,6 +208,8 @@ class MediaPage(QWidget):
         self._handle = None
         self._operation = ""
         self._import_plan = None
+        self._pending_import_summary = ""
+        self._import_progress = SimpleQueue()
         self.project = project
         self.model.set_records(())
         self._scanned_project_id = ""
