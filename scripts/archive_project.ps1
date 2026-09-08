@@ -16,6 +16,7 @@ $paths = @(
     "tests",
     "AGENTS.md",
     ".gitignore",
+    "MotionAnalysisStudio.spec",
     "pyproject.toml"
 )
 $existing = $paths |
