@@ -38,6 +38,13 @@
 - `scripts/smoke_exe.ps1 -Mode All`：GUI、Workflow、Capabilities 三项全部通过，退出码 0；先前的 QtWidgets DLL 加载错误未复现。
 - PyInstaller 报告一个未找到的可选隐藏导入 `scipy.special._cdflib`；现有 GUI、工作流、能力 smoke 和完整测试均未触发相关失败。
 
+## 恢复归档证据
+
+- 归档脚本已把 `MotionAnalysisStudio.spec` 纳入源码包，避免恢复后缺失 Windows 构建清单。
+- 源码归档：`D:\CODEX\2026-09-02\motion-analysis-studio-video-config-20260908-complete.zip`。
+- 归档关键结构检查覆盖 `app/main.py`、端到端验收测试、构建脚本、PyInstaller spec 和 `pyproject.toml`。
+- 从归档解压到独立目录后运行完整测试：353 项通过，耗时 663.242 秒，退出码 0；GUI、Workflow、Capabilities 套件内 smoke 通过。
+
 ## 已知限制
 
 - 本轮没有执行耗时较长的完整 Pose2Sim 八阶段真实分析；验证覆盖命令、项目目录注入、任务状态、既有结果读取和选择性重跑白名单。
