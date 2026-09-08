@@ -35,27 +35,38 @@ class Pose2SimPipelineTests(unittest.TestCase):
 
     def test_pipeline_commands_reenter_stage_entrypoint_for_requested_stages(self) -> None:
         config = Path("D:/项目/config/Config.toml")
+        project_root = Path("D:/项目")
 
         commands = build_pipeline_commands(
             config,
             ("calibration", "poseEstimation"),
+            project_root=project_root,
             executable=Path(sys.executable),
             frozen=False,
         )
 
         self.assertEqual(tuple(commands), ("calibration", "poseEstimation"))
         self.assertEqual(commands["calibration"][:3], (str(Path(sys.executable)), "-m", "app.main"))
-        self.assertEqual(commands["poseEstimation"][-4:], ("--pose2sim-stage", "poseEstimation", "--pose2sim-config", str(config)))
+        self.assertEqual(
+            commands["poseEstimation"][-6:],
+            (
+                "--pose2sim-stage", "poseEstimation",
+                "--pose2sim-config", str(config),
+                "--pose2sim-project-root", str(project_root),
+            ),
+        )
         with self.assertRaises(ValueError):
-            build_pipeline_commands(config, ("unknown",))
+            build_pipeline_commands(config, ("unknown",), project_root=project_root)
 
     def test_pipeline_commands_use_selected_pose2sim_python_without_app_package(self) -> None:
         config = Path("D:/项目/config/Config.toml")
+        project_root = Path("D:/项目")
         python = Path("E:/tools/pose-env/Scripts/python.exe")
 
         commands = build_pipeline_commands(
             config,
             ("triangulation",),
+            project_root=project_root,
             pose2sim_python=python,
         )
 
@@ -63,7 +74,7 @@ class Pose2SimPipelineTests(unittest.TestCase):
         self.assertEqual(command[0], str(python))
         self.assertEqual(command[1], "-c")
         self.assertIn("Pose2Sim", command[2])
-        self.assertEqual(command[-2:], ("triangulation", str(config)))
+        self.assertEqual(command[-3:], ("triangulation", str(config), str(project_root)))
         self.assertNotIn("app.main", command)
 
     def test_runner_exposes_incremental_log_and_per_stage_timing(self) -> None:
@@ -115,8 +126,13 @@ class Pose2SimPipelineTests(unittest.TestCase):
     def test_stage_entrypoint_dispatches_every_general_stage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "Config.toml"
-            config.write_text("[project]\nname = \"entrypoint\"\n", encoding="utf-8")
-            calls: list[str] = []
+            project_root = Path(directory) / "分析项目"
+            project_root.mkdir()
+            config.write_text(
+                "[project]\nproject_dir = '错误目录'\nname = \"entrypoint\"\n",
+                encoding="utf-8",
+            )
+            calls: list[tuple[str, object]] = []
             with ExitStack() as stack:
                 import Pose2Sim.Pose2Sim as pose2sim
 
@@ -125,13 +141,35 @@ class Pose2SimPipelineTests(unittest.TestCase):
                         patch.object(
                             pose2sim,
                             stage,
-                            side_effect=lambda *args, _stage=stage, **kwargs: calls.append(_stage),
+                            side_effect=lambda *args, _stage=stage, **kwargs: calls.append(
+                                (_stage, kwargs["config"])
+                            ),
                         )
                     )
                 for stage in GENERAL_POSE2SIM_STAGES:
-                    self.assertEqual(run_pose2sim_stage(stage, config), 0)
+                    self.assertEqual(run_pose2sim_stage(stage, config, project_root), 0)
 
-            self.assertEqual(calls, list(GENERAL_POSE2SIM_STAGES))
+            self.assertEqual([stage for stage, _config in calls], list(GENERAL_POSE2SIM_STAGES))
+            self.assertTrue(
+                all(
+                    config_data["project"]["project_dir"] == str(project_root.resolve())
+                    for _stage, config_data in calls
+                )
+            )
+
+    def test_pose_estimation_requires_a_managed_analysis_video_before_task_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = ProjectManager.create(Path(directory), "无分析视频")
+            project.path_for("config").write_text("[project]\nname = 'trial'\n", encoding="utf-8")
+            controller = ApplicationController()
+            self.assertTrue(controller.open_project(project))
+            launcher = PipelineLauncher(controller)
+
+            with self.assertRaisesRegex(ValueError, "导入视频"):
+                launcher.start(project, ("poseEstimation",))
+
+            self.assertEqual(controller.supervisor.snapshots(), ())
+            self.assertNotEqual(project.manifest["stages"]["poseEstimation"]["status"], "running")
 
     def test_launcher_records_completed_stage_and_log_in_manifest(self) -> None:
         recorded: dict[str, object] = {}

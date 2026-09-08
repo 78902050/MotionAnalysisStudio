@@ -15,13 +15,17 @@ class CorrectionRerunLaunchTests(unittest.TestCase):
         python = Path("E:/pose-env/Scripts/python.exe")
         commands = build_stage_commands(
             Path("D:/项目/config/Config.toml"),
+            project_root=Path("D:/项目"),
             pose2sim_python=python,
         )
 
         command = commands["triangulation"]
         self.assertEqual(command[0], str(python))
         self.assertEqual(command[1], "-c")
-        self.assertEqual(command[-2:], ("triangulation", "D:\\项目\\config\\Config.toml"))
+        self.assertEqual(
+            command[-3:],
+            ("triangulation", "D:\\项目\\config\\Config.toml", "D:\\项目"),
+        )
 
     def test_development_commands_use_application_stage_entrypoint(self) -> None:
         from app.application.correction_rerun_launcher import build_stage_commands
@@ -29,6 +33,7 @@ class CorrectionRerunLaunchTests(unittest.TestCase):
         config = Path("D:/项目/config/Config.toml")
         commands = build_stage_commands(
             config,
+            project_root=Path("D:/项目"),
             executable=Path(sys.executable),
             frozen=False,
         )
@@ -37,7 +42,14 @@ class CorrectionRerunLaunchTests(unittest.TestCase):
         self.assertNotIn("poseEstimation", commands)
         for stage, command in commands.items():
             self.assertEqual(command[:3], (str(Path(sys.executable)), "-m", "app.main"))
-            self.assertEqual(command[-4:], ("--pose2sim-stage", stage, "--pose2sim-config", str(config)))
+            self.assertEqual(
+                command[-6:],
+                (
+                    "--pose2sim-stage", stage,
+                    "--pose2sim-config", str(config),
+                    "--pose2sim-project-root", str(Path("D:/项目")),
+                ),
+            )
 
     def test_frozen_commands_reenter_the_packaged_executable(self) -> None:
         from app.application.correction_rerun_launcher import build_stage_commands
@@ -45,6 +57,7 @@ class CorrectionRerunLaunchTests(unittest.TestCase):
         executable = Path("D:/dist/MotionAnalysisStudio.exe")
         commands = build_stage_commands(
             Path("D:/项目/config/Config.toml"),
+            project_root=Path("D:/项目"),
             executable=executable,
             frozen=True,
         )

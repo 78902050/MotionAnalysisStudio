@@ -8,6 +8,7 @@ from typing import Any, Callable, Iterable
 from uuid import uuid4
 
 from app.adapters.pose2sim.runner import PipelineRunner, RunResult
+from app.media.importer import ANALYSIS_VIDEO_SUFFIXES
 from app.pipeline.dependency_graph import GENERAL_POSE2SIM_STAGES
 from app.pose2sim.config_document import ConfigDocument
 from app.project.discovery import ExistingResultDiscovery
@@ -23,6 +24,7 @@ def build_pipeline_commands(
     config_path: Path,
     stages: Iterable[str] = GENERAL_POSE2SIM_STAGES,
     *,
+    project_root: Path,
     executable: Path | None = None,
     frozen: bool | None = None,
     pose2sim_python: Path | None = None,
@@ -36,11 +38,19 @@ def build_pipeline_commands(
     if pose2sim_python is not None:
         python = Path(pose2sim_python)
         script = (
-            "import sys; from Pose2Sim import Pose2Sim as module; "
-            "getattr(module, sys.argv[1])(config=sys.argv[2])"
+            "import sys, tomllib\n"
+            "from pathlib import Path\n"
+            "from Pose2Sim import Pose2Sim as module\n"
+            "config = tomllib.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))\n"
+            "project = config.setdefault('project', {})\n"
+            "project['project_dir'] = str(Path(sys.argv[3]).resolve())\n"
+            "getattr(module, sys.argv[1])(config=config)\n"
         )
         return {
-            stage: (str(python), "-c", script, stage, str(Path(config_path)))
+            stage: (
+                str(python), "-c", script, stage,
+                str(Path(config_path)), str(Path(project_root)),
+            )
             for stage in selected
         }
     executable = Path(executable or sys.executable)
@@ -53,6 +63,8 @@ def build_pipeline_commands(
             stage,
             "--pose2sim-config",
             str(Path(config_path)),
+            "--pose2sim-project-root",
+            str(Path(project_root)),
         )
         for stage in selected
     }
@@ -73,11 +85,6 @@ class PipelineLauncher:
 
     def start(self, project: ProjectManager, stages: Iterable[str]) -> TaskHandle:
         selected = tuple(stages)
-        commands = build_pipeline_commands(
-            project.path_for("config"),
-            selected,
-            pose2sim_python=self.pose2sim_python_provider(),
-        )
         config_document = ConfigDocument.open(project.path_for("config"))
         validation = config_document.validate(config_document.text)
         if not validation.valid:
@@ -94,6 +101,14 @@ class PipelineLauncher:
             for snapshot in self.controller.supervisor.snapshots()
         ):
             raise RuntimeError("当前项目已有 Pose2Sim 流程任务")
+        if "poseEstimation" in selected and not self._has_analysis_video(project.root):
+            raise ValueError("二维姿态估计需要分析视频，请先在“视频素材”页面导入视频")
+        commands = build_pipeline_commands(
+            project.path_for("config"),
+            selected,
+            project_root=project.root,
+            pose2sim_python=self.pose2sim_python_provider(),
+        )
 
         log_file = f"pose2sim-{uuid4().hex}.log"
         log_path = project.path_for("logs") / log_file
@@ -142,6 +157,14 @@ class PipelineLauncher:
         handle = self.controller.start_task(request, work)
         self._log_paths[handle.task_id] = log_path
         return handle
+
+    @staticmethod
+    def _has_analysis_video(project_root: Path) -> bool:
+        videos = Path(project_root) / "videos"
+        return videos.is_dir() and any(
+            path.is_file() and path.suffix.casefold() in ANALYSIS_VIDEO_SUFFIXES
+            for path in videos.iterdir()
+        )
 
     def log_path_for(self, task_id: str) -> Path | None:
         return self._log_paths.get(task_id)

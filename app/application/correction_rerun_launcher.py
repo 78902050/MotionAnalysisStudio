@@ -18,6 +18,7 @@ from .controller import ApplicationController
 def build_stage_commands(
     config_path: Path,
     *,
+    project_root: Path,
     executable: Path | None = None,
     frozen: bool | None = None,
     pose2sim_python: Path | None = None,
@@ -29,6 +30,7 @@ def build_stage_commands(
         return build_pipeline_commands(
             config_path,
             CORRECTION_RERUN_STAGES,
+            project_root=project_root,
             pose2sim_python=pose2sim_python,
         )
     executable = Path(executable or sys.executable)
@@ -41,6 +43,8 @@ def build_stage_commands(
             stage,
             "--pose2sim-config",
             str(Path(config_path)),
+            "--pose2sim-project-root",
+            str(Path(project_root)),
         )
         for stage in CORRECTION_RERUN_STAGES
     }
@@ -94,6 +98,7 @@ class CorrectionRerunLauncher:
         config_path = project.path_for("config")
         commands = build_stage_commands(
             config_path,
+            project_root=project.root,
             pose2sim_python=self.pose2sim_python_provider(),
         )
         request = TaskRequest(

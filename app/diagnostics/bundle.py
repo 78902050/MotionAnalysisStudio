@@ -214,7 +214,9 @@ def run_workflow_smoke() -> GuiSmokeResult:
             if not config.validate(config.text).valid:
                 raise RuntimeError("valid Pose2Sim config was rejected")
             commands = build_pipeline_commands(
-                existing_project.path_for("config"), GENERAL_POSE2SIM_STAGES
+                existing_project.path_for("config"),
+                GENERAL_POSE2SIM_STAGES,
+                project_root=existing_project.root,
             )
             if tuple(commands) != GENERAL_POSE2SIM_STAGES:
                 raise RuntimeError("general Pose2Sim stage commands are incomplete")

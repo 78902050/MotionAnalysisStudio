@@ -15,6 +15,7 @@ from app.tasks.base import CancellationToken
 
 
 _NUMERIC_CAMERA = re.compile(r"(?:camera|cam)?0*(\d+)")
+ANALYSIS_VIDEO_SUFFIXES = frozenset({".mp4", ".avi", ".mov", ".mkv", ".m4v"})
 
 
 def _natural_key(value: str) -> tuple[tuple[int, object], ...]:
@@ -80,7 +81,7 @@ class VideoImportResult:
 
 
 class VideoImportService:
-    _VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".m4v"}
+    _VIDEO_SUFFIXES = ANALYSIS_VIDEO_SUFFIXES
     _DERIVED_TOKENS = ("_pose", "_sync", "_tracked", "_calibration")
 
     @classmethod
