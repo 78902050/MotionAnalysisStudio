@@ -33,6 +33,14 @@ def normalize_camera_name(name: str) -> str:
     return compact
 
 
+def _camera_destination(project: ProjectManager, camera: str, suffix: str) -> Path:
+    videos_root = (project.root / "videos").resolve()
+    destination = (videos_root / f"{camera}{suffix}").resolve()
+    if destination.parent != videos_root:
+        raise ValueError(f"unsafe camera ID for video destination: {camera!r}")
+    return destination
+
+
 def _mark_duplicate_conflicts(
     items: tuple[VideoImportItem, ...],
 ) -> tuple[VideoImportItem, ...]:
@@ -126,7 +134,7 @@ class VideoImportService:
             if len(matches) != 1 or len(normalized_sources[normalized]) != 1:
                 continue
             camera = matches[0]
-            destination = project.root / "videos" / f"{camera}{source.suffix}"
+            destination = _camera_destination(project, camera, source.suffix)
             items.append(
                 VideoImportItem(
                     source=source,
@@ -150,7 +158,7 @@ class VideoImportService:
         ordered = bool(remaining_sources) and len(remaining_sources) == len(remaining_cameras)
         if ordered:
             for source, camera in zip(remaining_sources, remaining_cameras, strict=True):
-                destination = project.root / "videos" / f"{camera}{source.suffix}"
+                destination = _camera_destination(project, camera, source.suffix)
                 items.append(
                     VideoImportItem(
                         source=source,
@@ -215,6 +223,7 @@ class VideoImportService:
                         token.raise_if_cancelled()
                     destination_handle.flush()
                     os.fsync(destination_handle.fileno())
+                token.raise_if_cancelled()
                 os.replace(temporary_name, item.destination)
             except BaseException:
                 try:

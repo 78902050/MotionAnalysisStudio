@@ -1,6 +1,8 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.media.importer import VideoImportService
 from app.project.manager import ProjectManager
@@ -184,6 +186,21 @@ class VideoImportServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(FileNotFoundError, "video file not found"):
                 VideoImportService.plan(project, [missing])
 
+    def test_plan_rejects_camera_destination_outside_managed_videos(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "project"
+            project = ProjectManager.create(root, "Video import")
+            project.manifest["cameras"] = [{"camera_id": "../escaped"}]
+            source = base / "clip.mp4"
+            source.write_bytes(b"video")
+
+            with self.assertRaisesRegex(ValueError, "unsafe camera ID"):
+                VideoImportService.plan(project, [source])
+
+            self.assertFalse((root / "escaped.mp4").exists())
+            self.assertEqual(tuple((root / "videos").iterdir()), ())
+
     def test_execute_copies_chinese_path_and_binds_project_relative_video(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -272,6 +289,35 @@ class VideoImportServiceTests(unittest.TestCase):
                     replace_existing=False,
                     token=_CancelDuringCopyToken(),
                 )
+
+            videos = root / "videos"
+            self.assertFalse((videos / "cam01.mp4").exists())
+            self.assertEqual(tuple(videos.iterdir()), ())
+            self.assertEqual(project.manifest["cameras"], [])
+
+    def test_cancellation_after_fsync_prevents_publication_and_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "project"
+            project = ProjectManager.create(root, "Video import")
+            source = base / "cam01.mp4"
+            source.write_bytes(b"video")
+            plan = VideoImportService.plan(project, [source])
+            token = CancellationToken()
+            real_fsync = os.fsync
+
+            def cancel_after_fsync(descriptor: int) -> None:
+                real_fsync(descriptor)
+                token.cancel()
+
+            with patch("app.media.importer.os.fsync", side_effect=cancel_after_fsync):
+                with self.assertRaises(TaskCancelled):
+                    VideoImportService.execute(
+                        project,
+                        plan,
+                        replace_existing=False,
+                        token=token,
+                    )
 
             videos = root / "videos"
             self.assertFalse((videos / "cam01.mp4").exists())
