@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from queue import Empty, SimpleQueue
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from app.application.controller import ApplicationController
 from app.media.bindings import VideoBindingService
+from app.media.importer import VideoImportPlan, VideoImportResult, VideoImportService
 from app.media.video_sources import VideoSourceResolver
 from app.project.manager import ProjectManager
 from app.tasks.base import CancellationToken, TaskRequest
@@ -61,7 +63,7 @@ class MediaRecord:
     @property
     def source_label(self) -> str:
         if self.source_kind == "original":
-            return "原视频"
+            return "分析视频"
         if self.source_kind == "pose2sim_overlay":
             return "Pose2Sim 二维标记视频"
         return "未绑定"
@@ -123,6 +125,9 @@ class MediaPage(QWidget):
         self.scan_count = 0
         self._scanned_project_id = ""
         self._handle: TaskHandle | None = None
+        self._operation = ""
+        self._import_plan: VideoImportPlan | None = None
+        self._import_progress: SimpleQueue[tuple[int, int, str]] = SimpleQueue()
         self._pending_import_summary = ""
         self._timer = QTimer(self)
         self._timer.setInterval(25)
@@ -139,7 +144,10 @@ class MediaPage(QWidget):
         heading = QLabel("视频素材")
         heading.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
         layout.addWidget(heading)
-        description = QLabel("核对相机与原始视频映射、帧率、分辨率和时长。这里只读取元数据，不修改或转码视频。")
+        description = QLabel(
+            "导入供 Pose2Sim 分析的视频，并核对相机映射、帧率、分辨率和时长。"
+            "视频复制到当前项目，不修改或转码外部文件。"
+        )
         description.setWordWrap(True)
         description.setStyleSheet("color: #aab9c4; font-size: 14px;")
         layout.addWidget(description)
@@ -148,19 +156,20 @@ class MediaPage(QWidget):
         self.refresh_button.setObjectName("media_refresh_button")
         self.refresh_button.clicked.connect(lambda: self.scan(force=True))
         actions.addWidget(self.refresh_button)
-        self.bind_original_button = QPushButton("为选中相机导入原视频")
-        self.bind_original_button.setObjectName("media_bind_original")
-        self.bind_original_button.clicked.connect(lambda: self._choose_and_bind("original"))
-        actions.addWidget(self.bind_original_button)
-        self.import_original_folder_button = QPushButton("批量导入原视频文件夹")
-        self.import_original_folder_button.setObjectName("media_import_original_folder")
-        self.import_original_folder_button.clicked.connect(self._choose_original_folder)
-        actions.addWidget(self.import_original_folder_button)
+        self.import_videos_button = QPushButton("导入视频")
+        self.import_videos_button.setObjectName("media_import_videos")
+        self.import_videos_button.clicked.connect(self._choose_videos)
+        actions.addWidget(self.import_videos_button)
+        self.cancel_import_button = QPushButton("取消导入")
+        self.cancel_import_button.setObjectName("media_cancel_import")
+        self.cancel_import_button.clicked.connect(self._cancel_import)
+        self.cancel_import_button.setEnabled(False)
+        actions.addWidget(self.cancel_import_button)
         self.bind_pose_button = QPushButton("绑定 Pose2Sim 视频")
         self.bind_pose_button.setObjectName("media_bind_pose2sim")
         self.bind_pose_button.clicked.connect(lambda: self._choose_and_bind("pose2sim_overlay"))
         actions.addWidget(self.bind_pose_button)
-        self.prefer_original_button = QPushButton("优先原视频")
+        self.prefer_original_button = QPushButton("优先分析视频")
         self.prefer_original_button.clicked.connect(lambda: self._set_preferred("original"))
         actions.addWidget(self.prefer_original_button)
         self.prefer_pose_button = QPushButton("优先标记视频")
@@ -197,6 +206,8 @@ class MediaPage(QWidget):
             self._handle.cancel()
         self._timer.stop()
         self._handle = None
+        self._operation = ""
+        self._import_plan = None
         self.project = project
         self.model.set_records(())
         self._scanned_project_id = ""
@@ -221,8 +232,10 @@ class MediaPage(QWidget):
         if self.controller is not None and self.controller.current_project is project:
             request = TaskRequest(project_id, self.controller.generation, "media-scan", {})
             self._handle = self.controller.start_task(request, lambda token: self._scan_project(project, token))
+            self._operation = "scan"
             self._timer.start()
             self.refresh_button.setEnabled(False)
+            self.import_videos_button.setEnabled(False)
             self.status.setText("正在后台读取视频元数据…")
             return
         self._finish(self._scan_project(project, CancellationToken()))
@@ -269,6 +282,13 @@ class MediaPage(QWidget):
         return tuple(records)
 
     def _poll(self) -> None:
+        if self._operation == "import":
+            while True:
+                try:
+                    completed, total, name = self._import_progress.get_nowait()
+                except Empty:
+                    break
+                self.status.setText(f"正在导入 {completed}/{total}：{name}")
         handle = self._handle
         if handle is None:
             self._timer.stop()
@@ -279,15 +299,43 @@ class MediaPage(QWidget):
             return
         self._timer.stop()
         self._handle = None
+        operation = self._operation
+        self._operation = ""
         self.refresh_button.setEnabled(True)
+        self.import_videos_button.setEnabled(True)
+        self.cancel_import_button.setEnabled(False)
         if self.project is None:
             return
         project_id = str(self.project.manifest.get("project_id", ""))
         generation = self.controller.generation if self.controller is not None else -1
         if result.project_id != project_id or result.generation != generation:
             return
-        if result.status != "succeeded" or not isinstance(result.value, tuple):
-            self.status.setText(f"媒体扫描失败：{result.error or result.status}")
+        if result.status != "succeeded":
+            label = "视频导入" if operation == "import" else "媒体扫描"
+            self.status.setText(f"{label}{'已取消' if result.status == 'cancelled' else '失败'}：{result.error or result.status}")
+            return
+        if operation == "import":
+            if not isinstance(result.value, VideoImportResult):
+                self.status.setText("视频导入失败：后台任务返回了无效结果")
+                return
+            plan = self._import_plan
+            unmatched = len(plan.unmatched_files) if plan is not None else 0
+            parts = [
+                f"已导入 {len(result.value.imported)} 个视频",
+                f"已映射 {len(result.value.bound_cameras)} 台相机",
+            ]
+            if result.value.skipped:
+                parts.append(f"跳过已有 {len(result.value.skipped)} 个")
+            if unmatched:
+                parts.append(f"未映射 {unmatched} 个")
+            self._pending_import_summary = "；".join(parts)
+            self._import_plan = None
+            self.sources_changed.emit()
+            self._scanned_project_id = ""
+            self.scan(force=True)
+            return
+        if not isinstance(result.value, tuple):
+            self.status.setText("媒体扫描失败：后台任务返回了无效结果")
             return
         self._finish(result.value)
 
@@ -328,38 +376,96 @@ class MediaPage(QWidget):
         self._scanned_project_id = ""
         self.scan(force=True)
 
-    def _choose_original_folder(self) -> None:
+    def _choose_videos(self) -> None:
         if self.project is None:
             self.status.setText("请先打开项目")
             return
-        directory = QFileDialog.getExistingDirectory(
+        if self.controller is None or self.controller.current_project is not self.project:
+            self.status.setText("当前项目未连接后台任务控制器")
+            return
+        paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "选择原视频文件夹",
+            "导入 Pose2Sim 分析视频",
             str(self.project.root),
+            "视频文件 (*.mp4 *.avi *.mov *.mkv *.m4v);;所有文件 (*)",
         )
-        if not directory:
+        if not paths:
             return
         try:
-            result = VideoBindingService.bind_directory(
-                self.project,
-                Path(directory),
-                "original",
-            )
+            plan = VideoImportService.plan(self.project, (Path(path) for path in paths))
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "原视频导入失败", str(exc))
+            QMessageBox.warning(self, "视频导入失败", str(exc))
             return
-        parts = [f"已绑定 {len(result.bound)} 台相机"]
-        if result.unmatched_cameras:
-            parts.append("未匹配：" + "、".join(result.unmatched_cameras))
-        if result.ambiguous:
-            parts.append("多个候选：" + "、".join(result.ambiguous))
-        if result.unmatched_files:
-            parts.append(f"未使用视频 {len(result.unmatched_files)} 个")
-        self._pending_import_summary = "；".join(parts)
-        if result.bound:
-            self.sources_changed.emit()
-        self._scanned_project_id = ""
-        self.scan(force=True)
+        if not plan.items:
+            self.status.setText(f"没有可导入的视频；未映射 {len(plan.unmatched_files)} 个")
+            return
+        if plan.requires_confirmation:
+            mapping = "\n".join(
+                f"{item.camera} ← {item.source.name}"
+                for item in plan.items
+                if item.match_method == "ordered"
+            )
+            answer = QMessageBox.question(
+                self,
+                "确认相机映射",
+                "以下文件名无法直接匹配相机，将按自然顺序关联：\n\n"
+                + mapping
+                + "\n\n确认后开始导入。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.status.setText("已取消视频导入，项目未发生变化")
+                return
+        replace_existing = False
+        if any(item.conflict for item in plan.items):
+            answer = QMessageBox.question(
+                self,
+                "项目中已有同名视频",
+                "选择“是”替换项目副本，选择“否”跳过已有文件，选择“取消”停止导入。",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer == QMessageBox.StandardButton.Cancel:
+                self.status.setText("已取消视频导入，项目未发生变化")
+                return
+            replace_existing = answer == QMessageBox.StandardButton.Yes
+        project = self.project
+        request = TaskRequest(
+            str(project.manifest["project_id"]),
+            self.controller.generation,
+            "video-import",
+            {"count": len(plan.items)},
+        )
+
+        def work(token: CancellationToken) -> VideoImportResult:
+            return VideoImportService.execute(
+                project,
+                plan,
+                replace_existing=replace_existing,
+                token=token,
+                progress=lambda completed, total, path: self._import_progress.put(
+                    (completed, total, path.name)
+                ),
+            )
+
+        self._import_plan = plan
+        self._handle = self.controller.start_task(request, work)
+        self._operation = "import"
+        self.refresh_button.setEnabled(False)
+        self.import_videos_button.setEnabled(False)
+        self.cancel_import_button.setEnabled(True)
+        self.status.setText(f"正在导入 0/{len(plan.items)}")
+        self._timer.start()
+
+    def _cancel_import(self) -> None:
+        if self._handle is None or self._operation != "import":
+            return
+        self._handle.cancel()
+        self.cancel_import_button.setEnabled(False)
+        self.status.setText("正在取消视频导入…")
 
     def _set_preferred(self, kind: str) -> None:
         camera = self._selected_camera()

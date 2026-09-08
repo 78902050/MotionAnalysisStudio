@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
-from app.gui.pages.media_page import MediaPage
+from app.gui.pages.media_page import MediaPage, MediaRecord
 from app.media.bindings import VideoBindingService
 from app.project.manager import ProjectManager
 from app.tasks.base import CancellationToken
@@ -75,7 +75,7 @@ class MediaBindingTests(unittest.TestCase):
 
             self.assertEqual(records[0].source_kind, "pose2sim_overlay")
             self.assertEqual(records[0].source_label, "Pose2Sim 二维标记视频")
-            self.assertIsNotNone(page.findChild(type(page.bind_original_button), "media_bind_original"))
+            self.assertIsNotNone(page.findChild(QPushButton, "media_import_videos"))
             page.close()
 
     def test_binding_rejects_unknown_camera_and_missing_file(self) -> None:
@@ -108,37 +108,18 @@ class MediaBindingTests(unittest.TestCase):
             self.assertEqual(project.manifest["cameras"][0]["video_path"], str(cam01.resolve()))
             self.assertNotIn("video_path", project.manifest["cameras"][1])
 
-    def test_media_page_exposes_single_and_folder_original_video_imports(self) -> None:
+    def test_media_page_exposes_single_analysis_video_import(self) -> None:
         page = MediaPage()
 
-        self.assertEqual(page.bind_original_button.text(), "为选中相机导入原视频")
-        self.assertIsNotNone(
-            page.findChild(type(page.bind_original_button), "media_import_original_folder")
-        )
+        self.assertEqual(page.import_videos_button.text(), "导入视频")
+        self.assertIsNotNone(page.findChild(QPushButton, "media_import_videos"))
+        self.assertEqual(page.prefer_original_button.text(), "优先分析视频")
         page.close()
 
-    def test_folder_import_button_binds_matching_videos_and_reports_result(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            project = self._project(root)
-            videos = root / "原始录像"
-            videos.mkdir()
-            (videos / "cam01.mp4").touch()
-            (videos / "cam02.mp4").touch()
-            page = MediaPage(project)
+    def test_original_source_is_labeled_as_analysis_video(self) -> None:
+        record = MediaRecord("cam01", "x.mp4", 30.0, "1920 × 1080", 1.0, source_kind="original")
 
-            with patch(
-                "app.gui.pages.media_page.QFileDialog.getExistingDirectory",
-                return_value=str(videos),
-            ) as choose_directory:
-                page.import_original_folder_button.click()
-
-            choose_directory.assert_called_once()
-            self.assertTrue(
-                all("video_path" in record for record in project.manifest["cameras"])
-            )
-            self.assertIn("已绑定 2 台相机", page.status.text())
-            page.close()
+        self.assertEqual(record.source_label, "分析视频")
 
 
 if __name__ == "__main__":
