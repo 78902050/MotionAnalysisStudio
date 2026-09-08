@@ -9,9 +9,14 @@ from PySide6.QtCore import QSettings, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
@@ -27,6 +32,7 @@ from app.project.manager import ProjectManager
 from app.tasks.handle import TaskHandle
 
 from ..layout import make_resizable_splitter, make_scrollable_panel
+from ..widgets.config_parameter_editor import ConfigParameterEditor
 
 
 _STAGE_LABELS = {
@@ -109,18 +115,33 @@ class PipelinePage(QWidget):
         config_header = QHBoxLayout()
         config_header.addWidget(QLabel("Config.toml"))
         config_header.addStretch(1)
+        self.import_config_button = QPushButton("导入 Config.toml")
+        self.import_config_button.setObjectName("pipeline_import_config")
+        self.import_config_button.clicked.connect(self._choose_config_file)
         self.save_config_button = QPushButton("保存配置")
         self.save_config_button.clicked.connect(self.save)
         self.reload_config_button = QPushButton("重新载入")
         self.reload_config_button.clicked.connect(self.reload)
+        config_header.addWidget(self.import_config_button)
         config_header.addWidget(self.save_config_button)
         config_header.addWidget(self.reload_config_button)
         config_layout.addLayout(config_header)
-        self.config_editor = QPlainTextEdit()
-        self.config_editor.setObjectName("pipeline_config_editor")
-        self.config_editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.config_editor.textChanged.connect(self._validate_editor)
-        config_layout.addWidget(self.config_editor, 1)
+        parameter_actions = QHBoxLayout()
+        self.add_custom_parameter_button = QPushButton("添加自定义参数")
+        self.add_custom_parameter_button.setObjectName("pipeline_add_custom_parameter")
+        self.add_custom_parameter_button.clicked.connect(self._show_add_parameter_dialog)
+        self.remove_parameter_button = QPushButton("删除选中参数")
+        self.remove_parameter_button.setObjectName("pipeline_remove_parameter")
+        self.remove_parameter_button.clicked.connect(self._remove_selected_parameter)
+        parameter_actions.addWidget(self.add_custom_parameter_button)
+        parameter_actions.addWidget(self.remove_parameter_button)
+        parameter_actions.addStretch(1)
+        config_layout.addLayout(parameter_actions)
+        self.parameter_editor = ConfigParameterEditor()
+        self.parameter_editor.text_changed.connect(lambda _text: self._validate_editor())
+        self.parameter_editor.validation_changed.connect(self._show_parameter_validation)
+        self.config_editor = self.parameter_editor.source_editor
+        config_layout.addWidget(self.parameter_editor, 1)
         self.config_status = QLabel("—")
         self.config_status.setObjectName("pipeline_config_status")
         self.config_status.setWordWrap(True)
@@ -158,10 +179,9 @@ class PipelinePage(QWidget):
         self._handle = None
         self.project = None
         self.document = None
-        self.config_editor.blockSignals(True)
-        self.config_editor.clear()
-        self.config_editor.blockSignals(False)
-        self.config_editor.setEnabled(False)
+        self.parameter_editor.set_project_root(None)
+        self.parameter_editor.set_text("")
+        self.parameter_editor.setEnabled(False)
         self.config_status.setText("请先打开项目")
         self.run_status.setText("未打开项目")
         self.log_viewer.clear()
@@ -176,6 +196,7 @@ class PipelinePage(QWidget):
         self._timer.stop()
         self._handle = None
         self.project = project
+        self.parameter_editor.set_project_root(project.root)
         try:
             self.document = ConfigDocument.open(project.path_for("config"))
             text = self.document.text
@@ -183,10 +204,8 @@ class PipelinePage(QWidget):
             self.document = None
             text = ""
             self.config_status.setText(f"配置读取失败：{exc}")
-        self.config_editor.blockSignals(True)
-        self.config_editor.setPlainText(text)
-        self.config_editor.blockSignals(False)
-        self.config_editor.setEnabled(self.document is not None)
+        self.parameter_editor.set_text(text)
+        self.parameter_editor.setEnabled(self.document is not None)
         self.log_viewer.clear()
         self._log_path = None
         self._log_offset = 0
@@ -217,6 +236,9 @@ class PipelinePage(QWidget):
             button.setEnabled(runnable and self.launcher is not None)
         self.save_config_button.setEnabled(self.document is not None and self._handle is None)
         self.reload_config_button.setEnabled(self.document is not None and self._handle is None)
+        self.import_config_button.setEnabled(self.project is not None and self._handle is None)
+        self.add_custom_parameter_button.setEnabled(self.document is not None and self._handle is None)
+        self.remove_parameter_button.setEnabled(self.document is not None and self._handle is None)
         self.cancel_button.setEnabled(self._handle is not None)
         self.open_log_button.setEnabled(self._log_path is not None)
 
@@ -238,6 +260,77 @@ class PipelinePage(QWidget):
         self._validate_editor()
         return True
 
+    def _choose_config_file(self) -> bool:
+        if self.project is None or self.document is None:
+            self.config_status.setText("请先打开项目")
+            return False
+        initial = str(self.settings.value("pipeline/last_config_dir", self.project.root))
+        filename, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入 Pose2Sim Config.toml",
+            initial,
+            "Config.toml (*.toml);;所有文件 (*)",
+        )
+        if not filename:
+            return False
+        source = Path(filename)
+        self.settings.setValue("pipeline/last_config_dir", str(source.parent))
+        try:
+            result = self.document.import_file(source)
+        except (OSError, ConfigSyntaxError) as exc:
+            self.config_status.setText(f"导入失败：{exc}")
+            return False
+        self.parameter_editor.set_text(self.document.text)
+        if result.changed and result.backup_path is not None:
+            self.config_status.setText(f"已导入项目副本；原配置备份：{result.backup_path}")
+        else:
+            self.config_status.setText("配置内容未变化")
+        self._validate_editor()
+        return True
+
+    def _show_add_parameter_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("添加自定义参数")
+        form = QFormLayout(dialog)
+        section = QLineEdit("pose")
+        key = QLineEdit()
+        value = QLineEdit()
+        description = QLineEdit()
+        form.addRow("章节（用 . 分隔）", section)
+        form.addRow("参数名", key)
+        form.addRow("TOML 值", value)
+        form.addRow("中文说明", description)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            section_path = tuple(part.strip() for part in section.text().split(".") if part.strip())
+            self.parameter_editor.add_custom_parameter(
+                section_path,
+                key.text().strip(),
+                value.text().strip(),
+                description.text().strip(),
+            )
+        except (OSError, ValueError) as exc:
+            self.config_status.setText(f"添加参数失败：{exc}")
+
+    def _remove_selected_parameter(self) -> None:
+        try:
+            removed = self.parameter_editor.remove_selected_parameter()
+        except (OSError, ValueError, KeyError) as exc:
+            self.config_status.setText(f"删除参数失败：{exc}")
+            return
+        self.config_status.setText("参数已从项目配置副本移除" if removed else "请先选择要删除的参数")
+
+    def _show_parameter_validation(self, valid: bool, message: str) -> None:
+        if not valid:
+            self.config_status.setText(message)
+
     def reload(self) -> bool:
         if self.document is None:
             return False
@@ -246,7 +339,7 @@ class PipelinePage(QWidget):
         except (OSError, ConfigSyntaxError) as exc:
             self.config_status.setText(f"重新载入失败：{exc}")
             return False
-        self.config_editor.setPlainText(text)
+        self.parameter_editor.set_text(text)
         self.config_status.setText("已重新载入磁盘配置")
         return True
 

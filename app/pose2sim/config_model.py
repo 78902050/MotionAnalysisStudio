@@ -56,7 +56,7 @@ class ConfigModel:
     def set_value(self, path: tuple[str, ...], toml_value: str) -> str:
         candidate = tomlkit.parse(self.as_text())
         container, key = self._locate(candidate, path)
-        old = container[key]
+        old = container.item(key)
         if not self._editable(old):
             raise ValueError(f"复杂参数只能在 TOML 源码中编辑：{'.'.join(path)}")
         new = self._parse_value(toml_value)
@@ -153,7 +153,7 @@ class ConfigModel:
             parsed = tomlkit.parse(f"value = {text}\n")
         except Exception as exc:
             raise ValueError(f"TOML 参数值无效：{exc}") from exc
-        return parsed["value"]
+        return parsed.item("value")
 
     @staticmethod
     def _editable(item: object) -> bool:

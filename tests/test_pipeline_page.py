@@ -2,11 +2,12 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtWidgets import QApplication, QPlainTextEdit, QScrollArea, QSplitter
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QTabWidget
 
 from app.adapters.pose2sim.runner import RunResult
 from app.gui.pages.pipeline_page import PipelinePage
@@ -145,6 +146,30 @@ class PipelinePageTests(unittest.TestCase):
 
             self.assertIsNone(page._handle)
             self.assertTrue(page.run_current_button.isEnabled())
+            page.close()
+
+    def test_import_config_file_updates_project_copy_and_parameter_view(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = ProjectManager.create(root / "project", "config import")
+            source = root / "外部" / "Config.toml"
+            source.parent.mkdir()
+            source.write_text("[project]\nframe_rate = 60\n[pose]\ndet_frequency = 2\n", encoding="utf-8")
+            source_before = source.read_bytes()
+            page = PipelinePage()
+            page.set_project(project)
+
+            with patch(
+                "app.gui.pages.pipeline_page.QFileDialog.getOpenFileName",
+                return_value=(str(source), "Config.toml"),
+            ):
+                page.import_config_button.click()
+
+            self.assertEqual(source.read_bytes(), source_before)
+            self.assertIn("det_frequency = 2", project.path_for("config").read_text(encoding="utf-8"))
+            self.assertIsNotNone(page.parameter_editor.item_for(("pose", "det_frequency")))
+            self.assertTrue(page.findChildren(QTabWidget))
+            self.assertIsNotNone(page.findChild(QPushButton, "pipeline_import_config"))
             page.close()
 
 
