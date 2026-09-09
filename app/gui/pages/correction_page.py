@@ -327,6 +327,7 @@ class CorrectionPage(QWidget):
         self._suppress_browse = False
         self._view_addresses: dict[str, FrameAddress] = {}
         self._view_failures: dict[str, str] = {}
+        self._pending_skeleton_camera: str | None = None
         self._topologies = SkeletonTopologyRepository()
         self._playback_waiting_for_video = False
         self._play_timer = QTimer(self)
@@ -799,6 +800,11 @@ class CorrectionPage(QWidget):
             camera: address.frame for camera, address in addresses.items()
         }
         self._request_visible_frames()
+        pending_camera = self._pending_skeleton_camera
+        if pending_camera and pending_camera not in addresses:
+            if pending_camera in failures:
+                self._clear_camera_canvas(pending_camera)
+            self._present_pending_skeleton(pending_camera)
 
     def refresh_video_frames(self) -> None:
         """Request the current visible frames after video bindings change."""
@@ -832,6 +838,7 @@ class CorrectionPage(QWidget):
         self._expected_frames.clear()
         self._view_addresses.clear()
         self._view_failures.clear()
+        self._pending_skeleton_camera = None
         self.current_camera.setText("—")
         self.synchronized_frame.setText("—")
         self.raw_frame.setText("—")
@@ -934,10 +941,16 @@ class CorrectionPage(QWidget):
         ):
             widget.setEnabled(enabled)
         if not enabled:
+            self._pending_skeleton_camera = None
             self.session_status.setText(f"仅查看：{resolution.blocker or '当前目标不可编辑'}")
             return
         self.session_status.setText(f"已定位问题 {resolution.issue_id}")
-        self._refresh_point_fields()
+        target_camera = resolution.edit_target.address.camera if resolution.edit_target else None
+        if self.provider is not None and target_camera is not None:
+            self._pending_skeleton_camera = target_camera
+        else:
+            self._pending_skeleton_camera = None
+            self._refresh_point_fields()
 
     def _fill_browse_selectors(self, resolution: CorrectionResolution) -> None:
         self.person_selector.blockSignals(True)
@@ -1029,6 +1042,17 @@ class CorrectionPage(QWidget):
             if card.property("camera") == target.address.camera:
                 self._refresh_skeleton_points(index, target)
                 self._canvases[index].set_selected_point(x, y)
+
+    def _present_pending_skeleton(self, camera: str) -> None:
+        if self._pending_skeleton_camera != camera:
+            return
+        self._pending_skeleton_camera = None
+        self._refresh_point_fields()
+
+    def _clear_camera_canvas(self, camera: str) -> None:
+        for index, card in enumerate(self._view_cards):
+            if card.property("camera") == camera:
+                self._canvases[index].clear()
 
     def _refresh_skeleton_points(self, view_index: int, target: CorrectionTarget) -> None:
         frame_pose_method = getattr(self.session.document, "frame_pose", None)
@@ -1155,6 +1179,7 @@ class CorrectionPage(QWidget):
             if card.property("camera") == camera:
                 self._canvases[index].set_frame(image)
                 self._view_labels[index].setText(self._video_status(camera, f"帧 {frame}"))
+        self._present_pending_skeleton(camera)
         if (
             self._play_timer.isActive()
             and self._playback_waiting_for_video
@@ -1170,6 +1195,9 @@ class CorrectionPage(QWidget):
                 self._view_labels[index].setText(
                     self._video_status(camera, f"帧 {frame} · {reason}")
                 )
+        if self._pending_skeleton_camera == camera:
+            self._clear_camera_canvas(camera)
+        self._present_pending_skeleton(camera)
         if (
             self._play_timer.isActive()
             and self._playback_waiting_for_video

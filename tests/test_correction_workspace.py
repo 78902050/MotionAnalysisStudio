@@ -5,6 +5,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
 from app.application.quality_correction_service import CorrectionResolution
@@ -105,6 +106,14 @@ class _Controller:
         return True
 
 
+class _DeferredFrameProvider(QObject):
+    frame_ready = Signal(str, int, object)
+    frame_failed = Signal(str, int, str)
+
+    def request(self, _address: FrameAddress) -> None:
+        pass
+
+
 class CorrectionWorkspaceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -196,6 +205,25 @@ class CorrectionWorkspaceTests(unittest.TestCase):
         self.assertEqual(canvas.point_count, 2)
         canvas.point_moved.emit(31.5, 42.5)
         self.assertEqual(session.document.value, (31.5, 42.5, 1.0))
+
+    def test_new_skeleton_waits_for_its_video_frame_before_replacing_the_canvas(self) -> None:
+        resolution = self._resolution()
+        assert resolution.edit_target is not None
+        session = _Session(resolution.edit_target)
+        page = CorrectionPage(provider=_DeferredFrameProvider(), session=session)
+        page.set_cameras(["camA"])
+
+        page.open_resolution(resolution, session)
+        canvas = page.findChild(CorrectionCanvas, "correction_canvas_1")
+        self.assertIsNotNone(canvas)
+        assert canvas is not None
+        self.assertEqual(canvas.point_count, 0)
+
+        page.set_view_addresses({"camA": FrameAddress("camA", "raw", 12)})
+        page._on_frame_ready("camA", 12, np.zeros((24, 32, 3), dtype=np.uint8))
+
+        self.assertEqual(canvas.point_count, 2)
+        page.close()
 
     def test_late_frame_from_previous_request_does_not_replace_current_view(self) -> None:
         page = CorrectionPage()
