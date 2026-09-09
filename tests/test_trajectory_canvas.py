@@ -10,6 +10,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
 from app.gui.widgets.trajectory_canvas import TrajectoryCanvas
+from app.gui.theme import UiPreferences, apply_theme, palette_for_name
 from app.playback.model import PlaybackTrajectory, TrajectorySource
 from app.playback.projection import ViewTransform, project_points
 
@@ -50,6 +51,20 @@ class TrajectoryCanvasTests(unittest.TestCase):
 
         self.assertGreater(canvas.view_transform.zoom, 0)
         self.assertFalse(image.isNull())
+
+    def test_canvas_background_follows_application_theme(self) -> None:
+        canvas = TrajectoryCanvas()
+        canvas.resize(80, 60)
+        image = QImage(80, 60, QImage.Format.Format_ARGB32)
+
+        apply_theme(self.application, UiPreferences("light", 12))
+        canvas.render(image)
+        self.assertEqual(image.pixelColor(2, 2).name(), palette_for_name("light").canvas.casefold())
+
+        apply_theme(self.application, UiPreferences("dark", 12))
+        canvas.render(image)
+        self.assertEqual(image.pixelColor(2, 2).name(), palette_for_name("dark").canvas.casefold())
+        apply_theme(self.application, UiPreferences("light", 12))
 
     def test_fit_all_uses_current_pose_not_whole_trial_translation(self) -> None:
         trajectory = PlaybackTrajectory(
@@ -166,9 +181,10 @@ class TrajectoryCanvasTests(unittest.TestCase):
         canvas.render(image)
 
         self.assertEqual(canvas.ghost_frame_indices(), (0, 1))
-        self.assertNotEqual(image.pixelColor(50, 38).name(), "#0b151d")
-        self.assertNotEqual(image.pixelColor(100, 38).name(), "#0b151d")
-        self.assertNotEqual(image.pixelColor(150, 38).name(), "#0b151d")
+        background = palette_for_name("light").canvas.casefold()
+        self.assertNotEqual(image.pixelColor(50, 38).name(), background)
+        self.assertNotEqual(image.pixelColor(100, 38).name(), background)
+        self.assertNotEqual(image.pixelColor(150, 38).name(), background)
 
     def test_fit_motion_window_keeps_displaced_ghosts_in_view(self) -> None:
         trajectory = PlaybackTrajectory(

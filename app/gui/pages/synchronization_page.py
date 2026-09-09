@@ -56,11 +56,11 @@ class SynchronizationPage(QWidget):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
         heading = QLabel("多相机同步")
-        heading.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
+        heading.setProperty("uiRole", "pageTitle")
         layout.addWidget(heading)
         description = QLabel("同步帧和原视频帧分开显示；偏移只能来自项目映射或人工确认。")
         description.setWordWrap(True)
-        description.setStyleSheet("color: #aab9c4; font-size: 14px;")
+        description.setProperty("uiRole", "muted")
         layout.addWidget(description)
 
         controls = QHBoxLayout()

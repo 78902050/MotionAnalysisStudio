@@ -80,13 +80,13 @@ class EventsPage(QWidget):
         layout.setSpacing(12)
 
         heading = QLabel("事件与周期")
-        heading.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
+        heading.setProperty("uiRole", "pageTitle")
         layout.addWidget(heading)
         description = QLabel(
             "按指标列和阈值检测动作事件，并在同一连续数据段内构建周期。缺失数据不会被插值成事件；人工调整追加到事件历史。"
         )
         description.setWordWrap(True)
-        description.setStyleSheet("color: #aab9c4; font-size: 14px;")
+        description.setProperty("uiRole", "muted")
         layout.addWidget(description)
 
         controls = QHBoxLayout()

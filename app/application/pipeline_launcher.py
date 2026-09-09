@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from uuid import uuid4
@@ -11,6 +12,7 @@ from app.adapters.pose2sim.runner import PipelineRunner, RunResult
 from app.media.importer import ANALYSIS_VIDEO_SUFFIXES
 from app.pipeline.dependency_graph import GENERAL_POSE2SIM_STAGES
 from app.pose2sim.config_document import ConfigDocument
+from app.pose2sim.runtime_diagnostics import classify_pose2sim_failure
 from app.project.discovery import ExistingResultDiscovery
 from app.project.manager import ProjectManager
 from app.project.manifest import utc_now
@@ -40,6 +42,15 @@ def build_pipeline_commands(
         script = (
             "import sys, tomllib\n"
             "from pathlib import Path\n"
+            "if sys.argv[1] == 'poseEstimation':\n"
+            "    from openvino.frontend import FrontEndManager\n"
+            "    frontends = {str(name).casefold() for name in FrontEndManager().get_available_front_ends()}\n"
+            "    if 'onnx' not in frontends:\n"
+            "        raise RuntimeError('MAS_POSE_RUNTIME_ONNX_MISSING: available_frontends=' + ','.join(sorted(frontends)))\n"
+            "    from openvino import Core\n"
+            "    devices = {str(name).upper() for name in Core().available_devices}\n"
+            "    if not any(name == 'CPU' or name.startswith('CPU.') for name in devices):\n"
+            "        raise RuntimeError('MAS_POSE_RUNTIME_CPU_MISSING: available_devices=' + ','.join(sorted(devices)))\n"
             "from Pose2Sim import Pose2Sim as module\n"
             "config = tomllib.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))\n"
             "project = config.setdefault('project', {})\n"
@@ -145,6 +156,13 @@ class PipelineLauncher:
                     break
                 except TimeoutError:
                     continue
+            if not result.succeeded and not result.cancelled:
+                classified = classify_pose2sim_failure(
+                    self._read_log_tail(result.log_path),
+                    result.failed_stage,
+                )
+                if classified is not None:
+                    result = replace(result, error=classified)
             self._record_result(project, selected, result)
             if result.cancelled:
                 raise TaskCancelled()
@@ -157,6 +175,17 @@ class PipelineLauncher:
         handle = self.controller.start_task(request, work)
         self._log_paths[handle.task_id] = log_path
         return handle
+
+    @staticmethod
+    def _read_log_tail(path: Path, limit: int = 256 * 1024) -> str:
+        try:
+            with Path(path).open("rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - limit))
+                return handle.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
 
     @staticmethod
     def _has_analysis_video(project_root: Path) -> bool:

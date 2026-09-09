@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from app.pose2sim.config_model import ConfigModel, ConfigParameter
 from app.pose2sim.custom_help_store import CustomHelpStore
 from app.pose2sim.parameter_help_zh import help_for, known_parameter_paths
+from app.gui.theme import palette_for_application
 
 
 _ENUM_PATHS = frozenset(
@@ -109,6 +110,12 @@ class ConfigParameterEditor(QWidget):
         self.validation_changed.emit(True, "Config.toml 语法有效")
         return True
 
+    def refresh_theme(self) -> None:
+        accent = QBrush(QColor(palette_for_application().accent))
+        for item in self._items.values():
+            item.setForeground(0, accent)
+        self.parameter_tree.viewport().update()
+
     def item_for(self, path: tuple[str, ...]) -> QTreeWidgetItem | None:
         return self._items.get(tuple(path))
 
@@ -178,7 +185,7 @@ class ConfigParameterEditor(QWidget):
             parent = self._section_item(parameter.path[:-1], sections)
             item = QTreeWidgetItem(parent)
             item.setText(0, f"ⓘ {parameter.path[-1]}")
-            item.setForeground(0, QBrush(QColor("#67e8f9")))
+            item.setForeground(0, QBrush(QColor(palette_for_application().accent)))
             item.setData(0, Qt.ItemDataRole.UserRole, parameter.path)
             tooltip = help_for(parameter.path, self._custom_help).tooltip()
             item.setToolTip(0, tooltip)

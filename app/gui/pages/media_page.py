@@ -142,14 +142,14 @@ class MediaPage(QWidget):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
         heading = QLabel("视频素材")
-        heading.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
+        heading.setProperty("uiRole", "pageTitle")
         layout.addWidget(heading)
         description = QLabel(
             "导入供 Pose2Sim 分析的视频，并核对相机映射、帧率、分辨率和时长。"
             "视频复制到当前项目，不修改或转码外部文件。"
         )
         description.setWordWrap(True)
-        description.setStyleSheet("color: #aab9c4; font-size: 14px;")
+        description.setProperty("uiRole", "muted")
         layout.addWidget(description)
         actions = QHBoxLayout()
         self.refresh_button = QPushButton("刷新媒体信息")

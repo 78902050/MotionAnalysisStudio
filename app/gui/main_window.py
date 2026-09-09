@@ -211,6 +211,9 @@ class MainWindow(QMainWindow):
         assert isinstance(pipeline_page, PipelinePage)
         self.controller.register_editor("pose2sim_config", pipeline_page)
         pipeline_page.pipeline_finished.connect(self._pipeline_finished)
+        settings_page = self._pages["settings"]
+        assert isinstance(settings_page, SettingsPage)
+        settings_page.settings_saved.connect(self._apply_ui_preferences)
         analysis_page = self._pages["analysis"]
         assert isinstance(analysis_page, AnalysisPage)
         analysis_page.metrics_ready.connect(self._analysis_metrics_ready)
@@ -236,7 +239,17 @@ class MainWindow(QMainWindow):
         collapse_action.setShortcut("Ctrl+Shift+L")
         collapse_action.triggered.connect(self.toggle_navigation)
         self.addAction(collapse_action)
-        apply_style(self._application())
+        self._apply_ui_preferences()
+
+    @Slot()
+    def _apply_ui_preferences(self) -> None:
+        apply_style(self._application(), self.settings)
+        for widget in self.findChildren(QWidget):
+            refresh_theme = getattr(widget, "refresh_theme", None)
+            if callable(refresh_theme):
+                refresh_theme()
+            widget.update()
+        self.update()
 
     def _build_project_bar(self) -> QFrame:
         bar = QFrame()
@@ -303,11 +316,11 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
         heading = QLabel(label)
-        heading.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
+        heading.setProperty("uiRole", "pageTitle")
         layout.addWidget(heading)
         description = QLabel(self._description_for(page_id))
         description.setWordWrap(True)
-        description.setStyleSheet("color: #aab9c4; font-size: 14px;")
+        description.setProperty("uiRole", "muted")
         layout.addWidget(description)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)

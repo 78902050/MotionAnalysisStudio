@@ -71,7 +71,7 @@ class PipelinePage(QWidget):
         root.setSpacing(8)
         header = QHBoxLayout()
         title = QLabel("Pose2Sim 流程")
-        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
+        title.setProperty("uiRole", "pageTitle")
         header.addWidget(title)
         header.addStretch(1)
         self.run_status = QLabel("未打开项目")

@@ -30,6 +30,7 @@ from app.application.dirty_state import DirtyState
 from app.visualization.skeleton import SkeletonTopologyRepository, skeleton_edge_side
 
 from ..layout import make_resizable_splitter, make_scrollable_panel
+from ..theme import palette_for_application
 
 if TYPE_CHECKING:
     from app.application.quality_correction_service import CorrectionResolution
@@ -154,19 +155,20 @@ class CorrectionCanvas(QWidget):
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#0d141c"))
+        palette = palette_for_application()
+        painter.fillRect(self.rect(), QColor(palette.canvas))
         target = self._image_rect()
         if not self._image.isNull():
             painter.drawImage(target, self._image)
         elif not target.isEmpty():
-            painter.fillRect(target, QColor("#111d28"))
-            painter.setPen(QPen(QColor("#2a3b49"), 1))
+            painter.fillRect(target, QColor(palette.recessed))
+            painter.setPen(QPen(QColor(palette.border), 1))
             painter.drawRect(target)
         if not target.isEmpty():
             edge_colors = {
-                "left": QColor("#4da3ff"),
-                "right": QColor("#ff8a4c"),
-                "center": QColor("#75d7c7"),
+                "left": QColor(palette.canvas_left),
+                "right": QColor(palette.canvas_right),
+                "center": QColor(palette.canvas_center),
             }
             for edge in self._edges:
                 if not self._edge_is_visible(edge):
@@ -178,16 +180,21 @@ class CorrectionCanvas(QWidget):
                     self._image_to_widget(QPointF(left[0], left[1])),
                     self._image_to_widget(QPointF(right[0], right[1])),
                 )
-            painter.setPen(QPen(QColor("#75d7c7"), 1))
-            painter.setBrush(QColor(117, 215, 199, 125))
+            point_color = QColor(palette.accent)
+            point_fill = QColor(palette.accent)
+            point_fill.setAlpha(125)
+            painter.setPen(QPen(point_color, 1))
+            painter.setBrush(point_fill)
             for x, y, confidence in self._points.values():
                 if confidence <= 0:
                     continue
                 painter.drawEllipse(self._image_to_widget(QPointF(x, y)), 3, 3)
         if self._selected_point is not None and not target.isEmpty():
             point = self._image_to_widget(self._selected_point)
-            painter.setPen(QPen(QColor("#f5c451"), 2))
-            painter.setBrush(QColor(245, 196, 81, 80))
+            selected_fill = QColor(palette.warning)
+            selected_fill.setAlpha(80)
+            painter.setPen(QPen(QColor(palette.warning), 2))
+            painter.setBrush(selected_fill)
             painter.drawEllipse(point, 7, 7)
             painter.drawLine(point + QPointF(-11, 0), point + QPointF(11, 0))
             painter.drawLine(point + QPointF(0, -11), point + QPointF(0, 11))
@@ -355,9 +362,9 @@ class CorrectionPage(QWidget):
         layout = QHBoxLayout(header)
         layout.setContentsMargins(8, 4, 8, 4)
         title = QLabel("二维修正")
-        title.setStyleSheet("font-size: 19px; font-weight: 700; color: #ffffff;")
+        title.setProperty("uiRole", "pageTitle")
         subtitle = QLabel("人工确认点位后再保存；同步帧与原视频帧分开显示")
-        subtitle.setStyleSheet("color: #aab9c4;")
+        subtitle.setProperty("uiRole", "muted")
         layout.addWidget(title)
         layout.addWidget(subtitle)
         layout.addStretch(1)
@@ -373,7 +380,7 @@ class CorrectionPage(QWidget):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(6, 6, 6, 6)
         title = QLabel("问题队列")
-        title.setStyleSheet("font-weight: 700; color: #ffffff;")
+        title.setProperty("uiRole", "sectionTitle")
         layout.addWidget(title)
         self.issue_filter = QComboBox()
         self.issue_filter.addItems(["全部问题", "待处理", "已处理", "已延期", "已忽略"])
@@ -422,7 +429,7 @@ class CorrectionPage(QWidget):
         controls.addWidget(self.camera_selector)
         controls.addStretch(1)
         self.view_hint = QLabel("视频读取在后台线程进行")
-        self.view_hint.setStyleSheet("color: #75d7c7;")
+        self.view_hint.setProperty("uiRole", "accent")
         controls.addWidget(self.view_hint)
         layout.addLayout(controls)
 
@@ -448,7 +455,7 @@ class CorrectionPage(QWidget):
             label.setObjectName(f"correction_view_label_{index + 1}")
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setWordWrap(True)
-            label.setStyleSheet("color: #aab9c4; padding: 3px;")
+            label.setProperty("uiRole", "muted")
             canvas = CorrectionCanvas()
             canvas.setObjectName(f"correction_canvas_{index + 1}")
             canvas.point_moved.connect(
@@ -471,7 +478,7 @@ class CorrectionPage(QWidget):
         layout = QVBoxLayout(details)
         layout.setContentsMargins(10, 6, 10, 6)
         title = QLabel("当前目标")
-        title.setStyleSheet("font-weight: 700; color: #ffffff;")
+        title.setProperty("uiRole", "sectionTitle")
         layout.addWidget(title)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)

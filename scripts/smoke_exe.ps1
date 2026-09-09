@@ -1,7 +1,7 @@
 param(
     [Alias("Exe")]
     [string]$Executable = "",
-    [ValidateSet("Gui", "Workflow", "Capabilities", "All")]
+    [ValidateSet("Gui", "Workflow", "Capabilities", "Runtime", "All")]
     [string]$Mode = "All"
 )
 
@@ -14,12 +14,13 @@ if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
     throw "Executable not found: $Executable. Run scripts/build_windows.ps1 first."
 }
 
-$checks = if ($Mode -eq "All") { @("Gui", "Workflow", "Capabilities") } else { @($Mode) }
+$checks = if ($Mode -eq "All") { @("Gui", "Workflow", "Capabilities", "Runtime") } else { @($Mode) }
 foreach ($check in $checks) {
     $argument = switch ($check) {
         "Gui" { "--gui-smoke-test" }
         "Workflow" { "--workflow-smoke-test" }
-        default { "--smoke-test" }
+        "Capabilities" { "--smoke-test" }
+        "Runtime" { "--pose2sim-runtime-check" }
     }
     $process = Start-Process -FilePath $Executable -ArgumentList $argument -Wait -PassThru -WindowStyle Hidden
     if ($process.ExitCode -ne 0) {

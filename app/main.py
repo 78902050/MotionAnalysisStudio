@@ -9,6 +9,10 @@ from pathlib import Path
 
 from app.diagnostics.bundle import run_gui_smoke, run_workflow_smoke, validate_installation
 from app.pipeline.dependency_graph import GENERAL_POSE2SIM_STAGES
+from app.pose2sim.runtime_diagnostics import (
+    inspect_openvino_runtime,
+    require_pose_estimation_runtime,
+)
 
 
 def run_pose2sim_stage(stage: str, config_path: Path, project_root: Path) -> int:
@@ -23,6 +27,8 @@ def run_pose2sim_stage(stage: str, config_path: Path, project_root: Path) -> int
     if not isinstance(project_config, dict):
         raise ValueError("Pose2Sim [project] configuration must be a table")
     project_config["project_dir"] = str(project_root)
+    if stage == "poseEstimation":
+        require_pose_estimation_runtime()
     from Pose2Sim.Pose2Sim import (
         filtering,
         calibration,
@@ -61,10 +67,24 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="exercise quality issue resolution and an auditable correction transaction",
     )
+    parser.add_argument(
+        "--pose2sim-runtime-check",
+        action="store_true",
+        help="check whether the current runtime can load OpenVINO ONNX models",
+    )
     parser.add_argument("--pose2sim-stage", choices=GENERAL_POSE2SIM_STAGES)
     parser.add_argument("--pose2sim-config", type=Path)
     parser.add_argument("--pose2sim-project-root", type=Path)
     arguments = parser.parse_args(argv)
+    if arguments.pose2sim_runtime_check:
+        report = inspect_openvino_runtime()
+        frontends = ", ".join(report.available_frontends) or "无"
+        devices = ", ".join(report.available_devices) or "无"
+        message = f"{report.user_message} 可用前端：{frontends}；可用设备：{devices}"
+        if report.technical_detail and not report.ok:
+            message = f"{message}\n{report.technical_detail}"
+        print(message, file=sys.stdout if report.ok else sys.stderr)
+        return 0 if report.ok else 1
     if arguments.pose2sim_stage is not None:
         if arguments.pose2sim_config is None:
             parser.error("--pose2sim-config is required with --pose2sim-stage")

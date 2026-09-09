@@ -82,13 +82,13 @@ class AssociationPage(QWidget):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
         heading = QLabel("多人身份关联")
-        heading.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
+        heading.setProperty("uiRole", "pageTitle")
         layout.addWidget(heading)
         description = QLabel(
             "候选只用于人工确认；确认前不会写入关联结果。表格保留相机、同步帧、检测人物和解释。"
         )
         description.setWordWrap(True)
-        description.setStyleSheet("color: #aab9c4; font-size: 14px;")
+        description.setProperty("uiRole", "muted")
         layout.addWidget(description)
 
         toolbar = QHBoxLayout()

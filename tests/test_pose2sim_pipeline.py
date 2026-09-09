@@ -77,6 +77,24 @@ class Pose2SimPipelineTests(unittest.TestCase):
         self.assertEqual(command[-3:], ("triangulation", str(config), str(project_root)))
         self.assertNotIn("app.main", command)
 
+    def test_external_python_pose_estimation_checks_onnx_in_selected_environment(self) -> None:
+        config = Path("D:/项目/config/Config.toml")
+        project_root = Path("D:/项目")
+        python = Path("E:/tools/pose-env/Scripts/python.exe")
+
+        command = build_pipeline_commands(
+            config,
+            ("poseEstimation",),
+            project_root=project_root,
+            pose2sim_python=python,
+        )["poseEstimation"]
+
+        self.assertEqual(command[0], str(python))
+        self.assertIn("FrontEndManager", command[2])
+        self.assertIn("MAS_POSE_RUNTIME_ONNX_MISSING", command[2])
+        self.assertIn("Core().available_devices", command[2])
+        self.assertIn("MAS_POSE_RUNTIME_CPU_MISSING", command[2])
+
     def test_runner_exposes_incremental_log_and_per_stage_timing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -156,6 +174,23 @@ class Pose2SimPipelineTests(unittest.TestCase):
                     for _stage, config_data in calls
                 )
             )
+
+    def test_bundled_pose_estimation_checks_runtime_before_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "Config.toml"
+            config.write_text("[project]\nname = 'runtime-check'\n", encoding="utf-8")
+            events: list[str] = []
+            with patch(
+                "app.main.require_pose_estimation_runtime",
+                side_effect=lambda: events.append("check"),
+            ), patch(
+                "Pose2Sim.Pose2Sim.poseEstimation",
+                side_effect=lambda **_kwargs: events.append("dispatch"),
+            ):
+                self.assertEqual(run_pose2sim_stage("poseEstimation", config, root), 0)
+
+            self.assertEqual(events, ["check", "dispatch"])
 
     def test_pose_estimation_requires_a_managed_analysis_video_before_task_creation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

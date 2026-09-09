@@ -97,13 +97,13 @@ class AnalysisPage(QWidget):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
         heading = QLabel("三维运动学")
-        heading.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
+        heading.setProperty("uiRole", "pageTitle")
         layout.addWidget(heading)
         description = QLabel(
             "位置、速度、加速度和角度指标在后台计算。每列保留单位、坐标系、采样率、滤波和输入来源。"
         )
         description.setWordWrap(True)
-        description.setStyleSheet("color: #aab9c4; font-size: 14px;")
+        description.setProperty("uiRole", "muted")
         layout.addWidget(description)
 
         artifacts = QFormLayout()

@@ -74,7 +74,7 @@ class Playback3DPage(QWidget):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(10, 6, 10, 6)
         title = QLabel("三维骨骼回放")
-        title.setStyleSheet("font-size: 19px; font-weight: 700; color: #ffffff;")
+        title.setProperty("uiRole", "pageTitle")
         header_layout.addWidget(title)
         self.source_selector = QComboBox()
         self.source_selector.setObjectName("playback_source_selector")

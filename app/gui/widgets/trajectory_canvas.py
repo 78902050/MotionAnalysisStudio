@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QWidget
 from app.playback.model import PlaybackTrajectory, Point3D
 from app.playback.projection import ViewTransform, project_points, view_coordinates
 from app.visualization.skeleton import keypoint_side, skeleton_edge_side
+from app.gui.theme import palette_for_application
 
 
 class TrajectoryCanvas(QWidget):
@@ -172,11 +173,12 @@ class TrajectoryCanvas(QWidget):
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#0b151d"))
+        palette = palette_for_application()
+        painter.fillRect(self.rect(), QColor(palette.canvas))
         self._draw_grid(painter)
         trajectory = self.trajectory
         if trajectory is None:
-            painter.setPen(QColor("#82939f"))
+            painter.setPen(QColor(palette.muted_text))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "选择 TRC 或 C3D 轨迹开始回放")
             return
         current = {
@@ -196,11 +198,12 @@ class TrajectoryCanvas(QWidget):
             if point is None:
                 continue
             selected = label == self.selected_label
-            painter.setPen(QPen(QColor("#ffd166") if selected else QColor("#b8fff5"), 2))
-            painter.setBrush(QColor("#ffd166") if selected else QColor("#35b9a9"))
+            point_color = QColor(palette.warning if selected else palette.accent)
+            painter.setPen(QPen(point_color.lighter(125), 2))
+            painter.setBrush(point_color)
             radius = 5 if selected else 3
             painter.drawEllipse(point, radius, radius)
-        painter.setPen(QColor("#91a7b5"))
+        painter.setPen(QColor(palette.muted_text))
         painter.drawText(12, 22, f"帧 {trajectory.frames[self.frame_index]}  ·  {trajectory.coordinate_unit}")
 
     def _draw_ghost_poses(
@@ -238,25 +241,28 @@ class TrajectoryCanvas(QWidget):
                 painter.setBrush(color)
                 painter.drawEllipse(point, 2, 2)
 
-    @staticmethod
-    def _side_color(side: str) -> QColor:
+    def _side_color(self, side: str) -> QColor:
+        palette = palette_for_application()
         return QColor(
             {
-                "left": "#4da3ff",
-                "right": "#ff8a4c",
-                "center": "#56ddcd",
-            }.get(side, "#56ddcd")
+                "left": palette.canvas_left,
+                "right": palette.canvas_right,
+                "center": palette.canvas_center,
+            }.get(side, palette.canvas_center)
         )
 
     def _draw_grid(self, painter: QPainter) -> None:
-        painter.setPen(QPen(QColor(35, 57, 70, 150), 1))
+        palette = palette_for_application()
+        grid = QColor(palette.canvas_grid)
+        grid.setAlpha(150)
+        painter.setPen(QPen(grid, 1))
         spacing = 40
         for x in range(0, self.width(), spacing):
             painter.drawLine(x, 0, x, self.height())
         for y in range(0, self.height(), spacing):
             painter.drawLine(0, y, self.width(), y)
         center = QPointF(self.width() / 2 + self.view_transform.pan_x, self.height() / 2 + self.view_transform.pan_y)
-        painter.setPen(QPen(QColor("#345c70"), 1.4))
+        painter.setPen(QPen(QColor(palette.border), 1.4))
         painter.drawLine(QPointF(0, center.y()), QPointF(self.width(), center.y()))
         painter.drawLine(QPointF(center.x(), 0), QPointF(center.x(), self.height()))
 
@@ -277,7 +283,9 @@ class TrajectoryCanvas(QWidget):
                     (self.width(), self.height()),
                 )
                 alpha = 25 + int(95 * (index - start) / denominator)
-                painter.setPen(QPen(QColor(53, 185, 169, alpha), 1.2))
+                color = QColor(palette_for_application().accent)
+                color.setAlpha(alpha)
+                painter.setPen(QPen(color, 1.2))
                 painter.drawLine(projected["a"], projected["b"])
 
     @staticmethod

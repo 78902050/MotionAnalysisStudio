@@ -10,6 +10,14 @@
 
 该命令只检查 Python、PySide6、NumPy、OpenCV、PyInstaller、Pose2Sim 和 Caliscope 能力，不打开界面，也不修改项目数据。
 
+单独检查当前运行环境能否读取 Pose2Sim 使用的 ONNX 模型：
+
+```powershell
+.\.venv\Scripts\python.exe -m app.main --pose2sim-runtime-check
+```
+
+输出的可用前端必须包含 `onnx`，可用设备必须包含 `CPU`。若只显示 `jax`、`pytorch`，说明当前 Python 环境或 EXE 缺少 OpenVINO ONNX 前端；若没有 `CPU`，则缺少 OpenVINO CPU 推理插件。这两种情况都不需要因此修改视频或 `Config.toml`。
+
 正常打开桌面程序：
 
 ```powershell
@@ -34,7 +42,7 @@
 - “相机标定”在导入前显示源文件、内容差异和阻断问题；激活后按相机显示图像尺寸、内参矩阵、畸变、旋转、平移和重投影误差。内容等价的文件会明确提示，不会伪装成一次数据更新。
 - “相机标定”也可选择工作区并启动 Caliscope GUI。若诊断发现 Caliscope 用户设置是有效 GB18030，只有点击“备份并转换为 UTF-8”才会改写；原文件先保存为时间戳备份。
 - “视频素材”使用统一的“导入视频”按钮一次选择一个或多个 Pose2Sim 分析输入。程序识别 `1`、`cam1`、`cam01`、`camera01` 等可解释的相机别名；仅在剩余视频数与相机数相等时提供自然顺序映射，并要求人工确认。视频在后台按原格式复制到 `<项目>/videos`，外部文件不会被修改或转码；目标冲突时可统一选择跳过、替换项目副本或取消。导入完成后会立即刷新二维修正页面的视频来源。Pose2Sim 二维标记视频仍可作为修正背景单独绑定和设为优先来源。
-- “设置”中的 Pose2Sim 和 Caliscope 使用安装文件夹选择器。可选择虚拟环境根目录、`Scripts` 目录或 Pose2Sim 包目录，程序会显示并保存自动识别出的 `python.exe`/`caliscope.exe`；留空时使用程序自带环境，旧版保存的可执行文件路径仍可读取。普通 Pose2Sim 流程和二维修正后的选择性重跑使用同一设置。
+- “设置”可选择浅色、深色或跟随系统主题，并将全局字号设置为 10–16pt；主题和字号保存后立即应用。Pose2Sim 和 Caliscope 使用安装文件夹选择器，可选择虚拟环境根目录、`Scripts` 目录或 Pose2Sim 包目录，程序会显示并保存自动识别出的 `python.exe`/`caliscope.exe`；留空时使用程序自带环境，旧版保存的可执行文件路径仍可读取。普通 Pose2Sim 流程和二维修正后的选择性重跑使用同一设置。
 - “二维质检/二维修正”使用相机、同步帧、原始帧、项目人物和关节点名称定位。首次保存保留备份，撤销、重做和文件恢复同时处理坐标与置信度。
 - “二维修正”打开已有项目时会枚举 `pose/<camera>_json`，自动显示首个可读帧；可直接切换相机、已有帧、人物和关节点。1/2/4 路模式分别使用单画面、左右双画面和 2×2 四画面；统一时间轴会通过同步映射刷新所有可见相机，缺少同步映射时明确按同一原始帧浏览。视频来源按“用户指定优先项 → 原视频 → Pose2Sim 二维标记视频”选择，并在画布标题中明确标注。滚轮以鼠标位置为中心缩放，左键拖动画布空白处或中键可平移，拖动选中关节点仍用于修正。骨架左侧为蓝色、右侧为橙色、中轴为青绿色；未知模型只显示明确的索引点，不猜测骨架关系。
 - “三维回放”自动枚举 `pose-3d/*.trc` 和 `pose-3d/*.c3d`，按试次、人物和字面版本分组，不把某个滤波版本自动标记为“最佳”。轨迹解析在后台进行，播放时间按文件时间轴推进；TRC 声明帧数与实际数据行不一致时按实际行回放并显示警告，严格运动学分析规则不变。
@@ -66,7 +74,25 @@ DiagnosticBundle().create(project, project.root / "diagnostics.zip")
 .\scripts\smoke_exe.ps1
 ```
 
-构建产物位于项目内 `outputs/build/dist/MotionAnalysisStudio.exe`。`smoke_exe.ps1` 默认依次验证 Qt 界面构造、质检问题到二维修正/备份/恢复事务和运行时能力，也可用 `-Mode Gui`、`-Mode Workflow` 或 `-Mode Capabilities` 单独检查。构建脚本通过项目相对路径定位入口，不依赖开发机绝对路径。
+构建产物位于项目内 `outputs/build/dist/MotionAnalysisStudio.exe`。`smoke_exe.ps1` 默认依次验证 Qt 界面构造、质检问题到二维修正/备份/恢复事务、运行时能力和 Pose2Sim ONNX/CPU 运行时，也可用 `-Mode Gui`、`-Mode Workflow`、`-Mode Capabilities` 或 `-Mode Runtime` 单独检查。构建脚本通过项目相对路径定位入口，不依赖开发机绝对路径。
+
+发布前还必须从最终 EXE 检查 ONNX 前端：
+
+```powershell
+.\outputs\build\dist\MotionAnalysisStudio.exe --pose2sim-runtime-check
+```
+
+使用 Pose2Sim 官方单人示例执行三帧二维姿态估计验收：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\pose2sim_sample_acceptance.py `
+  --sample .\.venv\Lib\site-packages\Pose2Sim\Demo_SinglePerson `
+  --runner .\outputs\build\dist\MotionAnalysisStudio.exe `
+  --runner-kind exe `
+  --frames 3
+```
+
+验收工具只修改临时副本，不改 Pose2Sim 安装目录。若运行时检查已包含 `onnx`，但首次模型下载出现 HTTP、SSL 或超时错误，应按网络/模型缓存问题处理，不能再归因于安装包缺少 ONNX 前端。
 
 ## 真实数据验收
 

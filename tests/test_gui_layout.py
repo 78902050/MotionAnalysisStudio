@@ -5,7 +5,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtWidgets import QApplication, QScrollArea, QSplitter
 
 from app.gui.main_window import MainWindow
 from app.gui.pages.media_page import MediaPage
@@ -13,6 +13,7 @@ from app.gui.pages.settings_page import SettingsPage
 from app.analysis.comparison import ComparisonMember, ComparisonRequest, ComparisonService
 from app.analysis.model import MetricTable
 from app.gui.pages.comparison_page import ComparisonPage
+from app.gui.theme import UiPreferences, apply_theme
 
 
 class GuiLayoutTests(unittest.TestCase):
@@ -60,6 +61,32 @@ class GuiLayoutTests(unittest.TestCase):
                 )
             )
         window.close()
+
+    def test_sixteen_point_text_keeps_complex_pages_scrollable_or_resizable(self) -> None:
+        apply_theme(self.application, UiPreferences("light", 16))
+        window = MainWindow()
+        window.resize(620, 480)
+        window.show()
+        try:
+            for page_id in (
+                "media",
+                "settings",
+                "calibration",
+                "pipeline",
+                "quality_2d",
+                "correction_2d",
+            ):
+                with self.subTest(page_id=page_id):
+                    self.assertTrue(window.navigate(page_id))
+                    self.application.processEvents()
+                    page = window.current_page
+                    self.assertTrue(
+                        page.findChildren(QScrollArea) or page.findChildren(QSplitter),
+                        f"{page_id} has no overflow or resizing mechanism",
+                    )
+        finally:
+            window.close()
+            apply_theme(self.application, UiPreferences("light", 12))
 
     def test_large_comparison_table_is_filled_without_long_event_loop_stalls(self) -> None:
         count = 6000

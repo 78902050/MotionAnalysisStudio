@@ -9,6 +9,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from app.gui.pages.correction_page import CorrectionCanvas
+from app.gui.theme import UiPreferences, apply_theme, palette_for_name
 
 
 class CorrectionOverlayTests(unittest.TestCase):
@@ -31,6 +32,20 @@ class CorrectionOverlayTests(unittest.TestCase):
         self.assertEqual(canvas.edge_count, 1)
         canvas.clear()
         self.assertEqual(canvas.edge_count, 0)
+
+    def test_canvas_background_follows_application_theme(self) -> None:
+        canvas = CorrectionCanvas()
+        canvas.resize(80, 60)
+        image = QImage(80, 60, QImage.Format.Format_ARGB32)
+
+        apply_theme(self.application, UiPreferences("light", 12))
+        canvas.render(image)
+        self.assertEqual(image.pixelColor(2, 2).name(), palette_for_name("light").canvas.casefold())
+
+        apply_theme(self.application, UiPreferences("dark", 12))
+        canvas.render(image)
+        self.assertEqual(image.pixelColor(2, 2).name(), palette_for_name("dark").canvas.casefold())
+        apply_theme(self.application, UiPreferences("light", 12))
 
     def test_unknown_model_can_draw_points_without_edges(self) -> None:
         canvas = CorrectionCanvas()

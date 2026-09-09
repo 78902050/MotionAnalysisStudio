@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.external_tools.discovery import ExternalToolDiscovery
+from app.gui.theme import UiPreferences, load_ui_preferences, save_ui_preferences
 
 from ..layout import make_scrollable_panel
 
@@ -43,14 +45,25 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
         heading = QLabel("设置")
-        heading.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
+        heading.setProperty("uiRole", "pageTitle")
         layout.addWidget(heading)
         description = QLabel("管理外部工具路径、视频帧缓存、二维微调步长和界面布局。空工具路径表示使用程序当前运行环境。")
         description.setWordWrap(True)
-        description.setStyleSheet("color: #aab9c4; font-size: 14px;")
+        description.setProperty("uiRole", "muted")
         layout.addWidget(description)
 
         form = QFormLayout()
+        self.theme_selector = QComboBox()
+        self.theme_selector.setObjectName("settings_theme")
+        self.theme_selector.addItem("浅色", "light")
+        self.theme_selector.addItem("深色", "dark")
+        self.theme_selector.addItem("跟随系统", "system")
+        form.addRow("界面主题", self.theme_selector)
+        self.font_size = QSpinBox()
+        self.font_size.setObjectName("settings_font_size")
+        self.font_size.setRange(10, 16)
+        self.font_size.setSuffix(" pt")
+        form.addRow("界面字号", self.font_size)
         self.pose2sim_path = self._path_row(
             form,
             "Pose2Sim 安装文件夹",
@@ -130,6 +143,10 @@ class SettingsPage(QWidget):
             target.setText(path)
 
     def load_settings(self) -> None:
+        preferences = load_ui_preferences(self.settings)
+        theme_index = self.theme_selector.findData(preferences.theme)
+        self.theme_selector.setCurrentIndex(max(0, theme_index))
+        self.font_size.setValue(preferences.font_point_size)
         self.pose2sim_path.setText(self._displayed_installation("pose2sim"))
         self.caliscope_path.setText(self._displayed_installation("caliscope"))
         self.cache_capacity.setValue(self.settings.value("media/cache_capacity", 20, type=int))
@@ -164,13 +181,20 @@ class SettingsPage(QWidget):
             self.settings.setValue(f"tools/{name}_path", executable)
         self.settings.setValue("media/cache_capacity", self.cache_capacity.value())
         self.settings.setValue("correction/nudge_step", self.nudge_step.value())
+        save_ui_preferences(
+            self.settings,
+            UiPreferences(
+                str(self.theme_selector.currentData()),
+                self.font_size.value(),
+            ),
+        )
         self.settings.sync()
         detected = "；".join(
             f"{'Pose2Sim' if name == 'pose2sim' else 'Caliscope'}：{executable}"
             for name, (_directory, executable) in resolved.items()
         )
         suffix = f"；已识别 {detected}" if detected else "；外部工具使用程序自带环境"
-        self.status.setText(f"设置已保存；缓存容量将在下次启动时生效{suffix}")
+        self.status.setText(f"设置已保存；主题和字号已立即生效，缓存容量将在下次启动时生效{suffix}")
         self.settings_saved.emit()
         return True
 

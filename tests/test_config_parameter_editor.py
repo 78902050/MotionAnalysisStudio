@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit
 
 from app.gui.widgets.config_parameter_editor import ConfigParameterEditor
+from app.gui.theme import UiPreferences, apply_theme, palette_for_name
 
 
 CONFIG = """[project]
@@ -36,6 +37,19 @@ class ConfigParameterEditorTests(unittest.TestCase):
         self.assertEqual(item.text(0), "ⓘ pose_model")
         self.assertIn("二维姿态模型", item.toolTip(0))
         self.assertNotIn("With RTMLib", item.toolTip(0))
+        editor.close()
+
+    def test_help_marker_accent_follows_application_theme(self) -> None:
+        apply_theme(self.application, UiPreferences("light", 12))
+        editor = ConfigParameterEditor()
+        editor.set_text(CONFIG)
+        item = editor.item_for(("pose", "pose_model"))
+        self.assertEqual(item.foreground(0).color().name(), palette_for_name("light").accent.casefold())
+
+        apply_theme(self.application, UiPreferences("dark", 12))
+        editor.refresh_theme()
+        self.assertEqual(item.foreground(0).color().name(), palette_for_name("dark").accent.casefold())
+        apply_theme(self.application, UiPreferences("light", 12))
         editor.close()
 
     def test_typed_editors_update_toml_source(self) -> None:

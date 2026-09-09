@@ -69,25 +69,23 @@ class _QualityPageBase(QWidget):
 
         header = QHBoxLayout()
         heading = QLabel(title)
-        heading.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
+        heading.setProperty("uiRole", "pageTitle")
         header.addWidget(heading)
         header.addStretch(1)
         self.report_version = QLabel("报告版本：—")
         self.report_version.setObjectName("quality_report_version")
-        self.report_version.setStyleSheet("color: #75d7c7; font-weight: 650;")
+        self.report_version.setProperty("uiRole", "accent")
         header.addWidget(self.report_version)
         layout.addLayout(header)
 
         subtitle = QLabel(description)
         subtitle.setWordWrap(True)
-        subtitle.setStyleSheet("color: #aab9c4; font-size: 14px;")
+        subtitle.setProperty("uiRole", "muted")
         layout.addWidget(subtitle)
 
         comparison = QFrame()
         comparison.setObjectName("quality_comparison_strip")
-        comparison.setStyleSheet(
-            "QFrame#quality_comparison_strip { background: #15212b; border: 1px solid #2a3c4b; border-radius: 5px; }"
-        )
+        comparison.setProperty("uiRole", "recessedPanel")
         comparison_layout = QGridLayout(comparison)
         comparison_layout.setContentsMargins(12, 10, 12, 10)
         comparison_layout.setHorizontalSpacing(18)
@@ -106,7 +104,7 @@ class _QualityPageBase(QWidget):
         layout.addWidget(comparison)
 
         issue_heading = QLabel("质量问题")
-        issue_heading.setStyleSheet("font-size: 16px; font-weight: 700; color: #ffffff;")
+        issue_heading.setProperty("uiRole", "sectionTitle")
         layout.addWidget(issue_heading)
         self.issue_table = QTableWidget(0, 6)
         self.issue_table.setObjectName("quality_issue_table")
@@ -130,7 +128,7 @@ class _QualityPageBase(QWidget):
         self.location_status = QLabel("点击问题可定位到二维修正；不可定位的问题会在此说明原因。")
         self.location_status.setObjectName("quality_location_status")
         self.location_status.setWordWrap(True)
-        self.location_status.setStyleSheet("color: #aab9c4;")
+        self.location_status.setProperty("uiRole", "muted")
         layout.addWidget(self.location_status)
 
         scroll = make_scrollable_panel(body)
@@ -144,7 +142,7 @@ class _QualityPageBase(QWidget):
     @staticmethod
     def _comparison_title(text: str) -> QLabel:
         label = QLabel(text)
-        label.setStyleSheet("color: #8295a3; font-size: 11px; font-weight: 700;")
+        label.setProperty("uiRole", "eyebrow")
         return label
 
     @staticmethod

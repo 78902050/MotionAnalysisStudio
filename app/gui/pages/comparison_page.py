@@ -92,13 +92,13 @@ class ComparisonPage(QWidget):
         layout.setSpacing(12)
 
         heading = QLabel("对比报告")
-        heading.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
+        heading.setProperty("uiRole", "pageTitle")
         layout.addWidget(heading)
         description = QLabel(
             "明确选择项目、人物和试次，再选择对齐依据。报告保留输入版本和缺失原因；缺失值不会被静默填成 0。"
         )
         description.setWordWrap(True)
-        description.setStyleSheet("color: #aab9c4; font-size: 14px;")
+        description.setProperty("uiRole", "muted")
         layout.addWidget(description)
 
         members = QHBoxLayout()

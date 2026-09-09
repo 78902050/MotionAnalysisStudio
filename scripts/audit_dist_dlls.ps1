@@ -23,8 +23,10 @@ if ($tocFiles.Count -eq 0) {
 
 $conflicts = @()
 $pattern = "(?is)\('icu(?:uc|in|dt\d*)\.dll'\s*,\s*'[^']*[\\/]poppler[\\/][^']*'"
+$tocContents = @()
 foreach ($tocFile in $tocFiles) {
     $content = Get-Content -LiteralPath $tocFile.FullName -Raw
+    $tocContents += $content
     if ($content -match $pattern) {
         $conflicts += $tocFile.FullName
     }
@@ -35,4 +37,15 @@ if ($conflicts.Count -gt 0) {
     exit 1
 }
 
-Write-Output "DLL audit passed: no incompatible Poppler ICU libraries were selected"
+$combinedToc = $tocContents -join "`n"
+if ($combinedToc -notmatch "(?i)openvino_onnx_frontend\.dll") {
+    Write-Error "Bundle is missing required OpenVINO frontend: openvino_onnx_frontend.dll"
+    exit 1
+}
+
+if ($combinedToc -notmatch "(?i)openvino_intel_cpu_plugin\.dll") {
+    Write-Error "Bundle is missing required OpenVINO device plugin: openvino_intel_cpu_plugin.dll"
+    exit 1
+}
+
+Write-Output "DLL audit passed: no incompatible Poppler ICU libraries were selected; OpenVINO ONNX frontend and CPU plugin are present"

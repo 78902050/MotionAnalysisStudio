@@ -48,11 +48,33 @@ class PackagingDiagnosticsTests(unittest.TestCase):
 
     def test_dll_audit_accepts_bundle_without_poppler_icu(self) -> None:
         completed = self._run_dll_audit(
-            "('PySide6\\\\Qt6Core.dll', 'C:\\\\venv\\\\PySide6\\\\Qt6Core.dll', 'BINARY')"
+            "('PySide6\\\\Qt6Core.dll', 'C:\\\\venv\\\\PySide6\\\\Qt6Core.dll', 'BINARY')\n"
+            "('openvino\\\\libs\\\\openvino_onnx_frontend.dll', "
+            "'C:\\\\venv\\\\openvino\\\\libs\\\\openvino_onnx_frontend.dll', 'BINARY')\n"
+            "('openvino\\\\libs\\\\openvino_intel_cpu_plugin.dll', "
+            "'C:\\\\venv\\\\openvino\\\\libs\\\\openvino_intel_cpu_plugin.dll', 'BINARY')"
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
         self.assertIn("DLL audit passed", completed.stdout)
+
+    def test_dll_audit_rejects_bundle_without_openvino_onnx_frontend(self) -> None:
+        completed = self._run_dll_audit(
+            "('openvino\\\\libs\\\\openvino_pytorch_frontend.dll', "
+            "'C:\\\\venv\\\\openvino\\\\libs\\\\openvino_pytorch_frontend.dll', 'BINARY')"
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("openvino_onnx_frontend.dll", completed.stderr + completed.stdout)
+
+    def test_dll_audit_rejects_bundle_without_openvino_cpu_plugin(self) -> None:
+        completed = self._run_dll_audit(
+            "('openvino\\\\libs\\\\openvino_onnx_frontend.dll', "
+            "'C:\\\\venv\\\\openvino\\\\libs\\\\openvino_onnx_frontend.dll', 'BINARY')"
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("openvino_intel_cpu_plugin.dll", completed.stderr + completed.stdout)
 
     def _run_dll_audit(self, toc_text: str) -> subprocess.CompletedProcess[str]:
         script = Path("scripts/audit_dist_dlls.ps1").resolve()
