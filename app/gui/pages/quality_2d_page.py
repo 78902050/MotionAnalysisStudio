@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Mapping
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -334,7 +335,10 @@ class Quality2DPage(_QualityPageBase):
         filters.addWidget(QLabel("关键点"), 1, 0)
         self.keypoint_filter = QComboBox()
         self.keypoint_filter.setObjectName("quality_2d_keypoint_filter")
-        self.keypoint_filter.addItem("全部关键点", None)
+        self.keypoint_filter.setEditable(True)
+        self.keypoint_filter.lineEdit().setReadOnly(True)
+        self.keypoint_filter.lineEdit().setPlaceholderText("全部关键点")
+        self._replace_keypoint_options(())
         filters.addWidget(self.keypoint_filter, 1, 1)
         filters.addWidget(QLabel("帧范围"), 1, 2)
         self.frame_start_filter = QSpinBox()
@@ -362,9 +366,12 @@ class Quality2DPage(_QualityPageBase):
         self.confidence_threshold.setSingleStep(0.05)
         self.confidence_threshold.setValue(0.5)
         filters.addWidget(self.confidence_threshold, 2, 2)
+        self.apply_filters_button = QPushButton("开始筛选")
+        self.apply_filters_button.setObjectName("quality_2d_apply_filters")
+        filters.addWidget(self.apply_filters_button, 2, 3)
         self.reset_filters_button = QPushButton("清除筛选")
         self.reset_filters_button.setObjectName("quality_2d_reset_filters")
-        filters.addWidget(self.reset_filters_button, 2, 3)
+        filters.addWidget(self.reset_filters_button, 2, 4)
         self._content_layout.insertLayout(2, filters)
 
         actions = QHBoxLayout()
@@ -380,13 +387,14 @@ class Quality2DPage(_QualityPageBase):
         self.scan_progress.setTextVisible(True)
         self.scan_progress.setVisible(False)
         self._content_layout.insertWidget(4, self.scan_progress)
-        self.camera_filter.currentIndexChanged.connect(self._apply_filters)
-        self.person_filter.currentIndexChanged.connect(self._apply_filters)
-        self.keypoint_filter.currentIndexChanged.connect(self._apply_filters)
-        self.frame_start_filter.valueChanged.connect(self._apply_filters)
-        self.frame_end_filter.valueChanged.connect(self._apply_filters)
-        self.confidence_operator.currentIndexChanged.connect(self._apply_filters)
-        self.confidence_threshold.valueChanged.connect(self._apply_filters)
+        self.camera_filter.currentIndexChanged.connect(self._mark_filters_dirty)
+        self.person_filter.currentIndexChanged.connect(self._mark_filters_dirty)
+        self.keypoint_filter.view().pressed.connect(self._toggle_keypoint_filter)
+        self.frame_start_filter.valueChanged.connect(self._mark_filters_dirty)
+        self.frame_end_filter.valueChanged.connect(self._mark_filters_dirty)
+        self.confidence_operator.currentIndexChanged.connect(self._mark_filters_dirty)
+        self.confidence_threshold.valueChanged.connect(self._mark_filters_dirty)
+        self.apply_filters_button.clicked.connect(self._apply_filters)
         self.reset_filters_button.clicked.connect(self._reset_filters)
         if self.viewer_model is not None:
             self._refresh_filter_options()
@@ -450,7 +458,7 @@ class Quality2DPage(_QualityPageBase):
             return
         previous_camera = self.camera_filter.currentData()
         previous_person = self.person_filter.currentData()
-        previous_keypoint = self.keypoint_filter.currentData()
+        previous_keypoints = self._selected_keypoints()
         cameras = sorted(
             {
                 row.target.address.camera
@@ -477,17 +485,12 @@ class Quality2DPage(_QualityPageBase):
             self.person_filter,
             "全部人物",
             (
-                (f"人物 {raw_index + 1}", raw_index)
+                (f"人物 {raw_index}", raw_index)
                 for raw_index in self._actual_person_indices()
             ),
             previous_person,
         )
-        self._replace_filter_options(
-            self.keypoint_filter,
-            "全部关键点",
-            ((keypoint, keypoint) for keypoint in keypoints),
-            previous_keypoint,
-        )
+        self._replace_keypoint_options(keypoints, previous_keypoints)
 
     @staticmethod
     def _replace_filter_options(
@@ -504,6 +507,78 @@ class Quality2DPage(_QualityPageBase):
         selected_index = combo.findData(selected)
         combo.setCurrentIndex(selected_index if selected_index >= 0 else 0)
         combo.blockSignals(False)
+
+    def _replace_keypoint_options(
+        self,
+        keypoints: tuple[str, ...] | list[str],
+        selected: set[str] | None = None,
+    ) -> None:
+        """Populate the keypoint picker with genuinely checkable choices."""
+        chosen = selected or set()
+        model = QStandardItemModel(self.keypoint_filter)
+        all_item = QStandardItem("全部关键点")
+        all_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+        all_item.setData(None, Qt.ItemDataRole.UserRole)
+        all_item.setData(Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+        model.appendRow(all_item)
+        for keypoint in keypoints:
+            item = QStandardItem(keypoint)
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setData(keypoint, Qt.ItemDataRole.UserRole)
+            item.setData(
+                Qt.CheckState.Checked if keypoint in chosen else Qt.CheckState.Unchecked,
+                Qt.ItemDataRole.CheckStateRole,
+            )
+            model.appendRow(item)
+        self.keypoint_filter.blockSignals(True)
+        self.keypoint_filter.setModel(model)
+        self.keypoint_filter.setCurrentIndex(0)
+        self.keypoint_filter.blockSignals(False)
+        self._update_keypoint_filter_text()
+
+    def _selected_keypoints(self) -> set[str]:
+        model = self.keypoint_filter.model()
+        return {
+            str(self.keypoint_filter.itemData(row))
+            for row in range(1, self.keypoint_filter.count())
+            if model.data(model.index(row, 0), Qt.ItemDataRole.CheckStateRole)
+            == Qt.CheckState.Checked
+        }
+
+    def _toggle_keypoint_filter(self, index) -> None:
+        if not index.isValid():
+            return
+        model = self.keypoint_filter.model()
+        if index.row() == 0:
+            for row in range(1, self.keypoint_filter.count()):
+                model.setData(
+                    model.index(row, 0),
+                    Qt.CheckState.Unchecked,
+                    Qt.ItemDataRole.CheckStateRole,
+                )
+        else:
+            state = model.data(index, Qt.ItemDataRole.CheckStateRole)
+            model.setData(
+                index,
+                (
+                    Qt.CheckState.Unchecked
+                    if state == Qt.CheckState.Checked
+                    else Qt.CheckState.Checked
+                ),
+                Qt.ItemDataRole.CheckStateRole,
+            )
+        self._update_keypoint_filter_text()
+        self._mark_filters_dirty()
+
+    def _update_keypoint_filter_text(self) -> None:
+        selected = sorted(self._selected_keypoints(), key=str.casefold)
+        if not selected:
+            text = "全部关键点"
+        elif len(selected) == 1:
+            text = selected[0]
+        else:
+            text = f"已选 {len(selected)} 个关键点"
+        self.keypoint_filter.lineEdit().setText(text)
 
     def _actual_person_indices(self) -> tuple[int, ...]:
         if self.viewer_model is None:
@@ -554,7 +629,7 @@ class Quality2DPage(_QualityPageBase):
     ) -> bool:
         camera = self.camera_filter.currentData()
         raw_person_index = self.person_filter.currentData()
-        keypoint = self.keypoint_filter.currentData()
+        keypoints = self._selected_keypoints()
         first_frame = self.frame_start_filter.value()
         last_frame = self.frame_end_filter.value()
         confidence_mode = self.confidence_operator.currentData()
@@ -565,8 +640,9 @@ class Quality2DPage(_QualityPageBase):
             person is None or person.raw_person_index != raw_person_index
         ):
             return False
-        if keypoint is not None and (
-            keypoint_address is None or keypoint_address.keypoint_name != keypoint
+        if keypoints and (
+            keypoint_address is None
+            or keypoint_address.keypoint_name not in keypoints
         ):
             return False
         if first_frame > 0 or last_frame < 2_147_483_647:
@@ -598,15 +674,21 @@ class Quality2DPage(_QualityPageBase):
         self._fill_issues()
         shown = len(self._issues_for_display())
         self.location_status.setText(
-            f"筛选后显示 {shown}/{len(self.viewer_model.issues)} 个问题；点击可定位问题进入二维修正。"
+            f"筛选后显示 {shown}/{len(self.viewer_model.issues)} 个问题；已同步刷新二维修正的问题列表。"
         )
         self.issues_filtered.emit(self._filtered_report_issues())
+
+    def _mark_filters_dirty(self, *_ignored: object) -> None:
+        if self.viewer_model is None or not hasattr(self, "apply_filters_button"):
+            return
+        self.location_status.setText(
+            "筛选条件已修改；点击“开始筛选”同时刷新二维质检与二维修正的问题列表。"
+        )
 
     def _reset_filters(self) -> None:
         controls = (
             self.camera_filter,
             self.person_filter,
-            self.keypoint_filter,
             self.frame_start_filter,
             self.frame_end_filter,
             self.confidence_operator,
@@ -616,13 +698,18 @@ class Quality2DPage(_QualityPageBase):
             control.blockSignals(True)
         self.camera_filter.setCurrentIndex(0)
         self.person_filter.setCurrentIndex(0)
-        self.keypoint_filter.setCurrentIndex(0)
         self.frame_start_filter.setValue(0)
         self.frame_end_filter.setValue(2_147_483_647)
         self.confidence_operator.setCurrentIndex(0)
         self.confidence_threshold.setValue(0.5)
         for control in controls:
             control.blockSignals(False)
+        self._replace_keypoint_options(
+            tuple(
+                str(self.keypoint_filter.itemData(row))
+                for row in range(1, self.keypoint_filter.count())
+            )
+        )
         self._apply_filters()
 
 
@@ -672,7 +759,7 @@ def _target_text(target: object) -> str:
         return "不可定位"
     frame_label = "原始帧" if target.address.timeline == "raw" else "帧"
     person_label = (
-        f"人物 {target.person.raw_person_index + 1}"
+        f"人物 {target.person.raw_person_index}"
         if target.person.raw_person_index is not None
         else target.person.project_person_id
     )

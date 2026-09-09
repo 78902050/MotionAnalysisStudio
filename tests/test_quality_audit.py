@@ -151,7 +151,13 @@ class QualityAuditTests(unittest.TestCase):
                 values.extend((100.0 + index, 200.0 + index, confidence))
             _write_json(
                 project.root / "pose" / "camA_json" / "camA_000012.json",
-                {"version": 1.3, "people": [{"pose_keypoints_2d": values}]},
+                {
+                    "version": 1.3,
+                    "people": [
+                        {"pose_keypoints_2d": values},
+                        {},
+                    ],
+                },
             )
 
             progress: list[tuple[int, int]] = []
@@ -177,7 +183,7 @@ class QualityAuditTests(unittest.TestCase):
             self.assertEqual(report.metrics()["2d_low_confidence_points"], 1)
             self.assertEqual(
                 report.inputs["pose_2d"]["raw_person_indices"],
-                [0],
+                [0, 1],
             )
             self.assertEqual(progress[0], (0, 1))
             self.assertEqual(progress[-1], (1, 1))

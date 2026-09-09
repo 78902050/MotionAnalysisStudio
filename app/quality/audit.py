@@ -424,10 +424,17 @@ class QualityAuditService:
                 if not isinstance(frame, int):
                     continue
                 audited_frames.add((camera, frame))
-                for person_record in self._records(frame_record.get("people")):
-                    raw_index = person_record.get("raw_person_index")
-                    if isinstance(raw_index, int) and raw_index >= 0:
-                        detections.add((camera, frame, raw_index))
+                for ordinal, person_record in enumerate(
+                    self._records(frame_record.get("people"))
+                ):
+                    raw_index = person_record.get("raw_person_index", ordinal)
+                    if (
+                        not isinstance(raw_index, int)
+                        or isinstance(raw_index, bool)
+                        or raw_index < 0
+                    ):
+                        raw_index = ordinal
+                    detections.add((camera, frame, raw_index))
                 self._audit_legacy_pose_frame(
                     camera,
                     frame,
@@ -446,10 +453,8 @@ class QualityAuditService:
                 frame = int(match.group(1))
                 people = self._records(value.get("people"))
                 audited_frames.add((camera, frame))
-                for raw_index, person_record in enumerate(people):
-                    values = person_record.get("pose_keypoints_2d")
-                    if isinstance(values, list) and values:
-                        detections.add((camera, frame, raw_index))
+                for raw_index, _person_record in enumerate(people):
+                    detections.add((camera, frame, raw_index))
                 self._audit_pose2sim_frame(
                     camera,
                     frame,
@@ -583,7 +588,7 @@ class QualityAuditService:
                 person=person,
                 keypoint=keypoint,
                 message=(
-                    f"相机 {camera} 原始帧 {frame} 人物 {(person.raw_person_index or 0) + 1} "
+                    f"相机 {camera} 原始帧 {frame} 人物 {person.raw_person_index or 0} "
                     f"的 {keypoint.keypoint_name} 缺少有效二维坐标或置信度"
                 ),
                 evidence=base_evidence,
@@ -601,7 +606,7 @@ class QualityAuditService:
             person=person,
             keypoint=keypoint,
             message=(
-                f"相机 {camera} 原始帧 {frame} 人物 {(person.raw_person_index or 0) + 1} "
+                f"相机 {camera} 原始帧 {frame} 人物 {person.raw_person_index or 0} "
                 f"的 {keypoint.keypoint_name} 置信度 {confidence_value:.3f} "
                 f"低于阈值 {self.low_confidence_threshold:.3f}"
             ),

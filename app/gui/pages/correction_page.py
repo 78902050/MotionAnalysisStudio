@@ -43,7 +43,7 @@ def _quality_issue_label(issue: QualityIssue) -> str:
         return f"不可定位 · {issue.message}"
     frame_label = "原始帧" if issue.target.timeline == "raw" else "帧"
     person_label = (
-        f"人物 {issue.person.raw_person_index + 1}"
+        f"人物 {issue.person.raw_person_index}"
         if issue.person is not None and issue.person.raw_person_index is not None
         else issue.person.project_person_id
         if issue.person is not None

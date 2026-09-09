@@ -158,7 +158,7 @@ class QualityPageTests(unittest.TestCase):
             FrameAddress("camA", "raw", 12),
             PersonAddress("raw-1", raw_person_index=1),
             KeypointAddress("HALPE_26", "LWrist", 9),
-            "相机 camA 原始帧 12 人物 2 的 LWrist 置信度 0.180 低于阈值 0.500",
+            "相机 camA 原始帧 12 人物 1 的 LWrist 置信度 0.180 低于阈值 0.500",
             {"confidence": 0.18, "threshold": 0.5},
         )
         page = Quality2DPage()
@@ -168,7 +168,7 @@ class QualityPageTests(unittest.TestCase):
         self.assertEqual(page.issue_table.rowCount(), 1)
         self.assertEqual(
             page.issue_table.item(0, 6).text(),
-            "camA · 原始帧 12 · 人物 2 · LWrist",
+            "camA · 原始帧 12 · 人物 1 · LWrist",
         )
         self.assertEqual(page.issue_table.item(0, 5).text(), "0.180 < 0.500")
         page.close()
@@ -254,15 +254,30 @@ class QualityPageTests(unittest.TestCase):
 
         page.camera_filter.setCurrentIndex(page.camera_filter.findData("camA"))
         self.assertGreaterEqual(page.person_filter.findData(1), 0)
+        self.assertEqual(
+            page.person_filter.itemText(page.person_filter.findData(0)), "人物 0"
+        )
         page.person_filter.setCurrentIndex(page.person_filter.findData(0))
         page.frame_start_filter.setValue(20)
         page.frame_end_filter.setValue(30)
-        page.keypoint_filter.setCurrentIndex(page.keypoint_filter.findData("RWrist"))
+        page._toggle_keypoint_filter(
+            page.keypoint_filter.model().index(
+                page.keypoint_filter.findData("LWrist"), 0
+            )
+        )
+        page._toggle_keypoint_filter(
+            page.keypoint_filter.model().index(
+                page.keypoint_filter.findData("RWrist"), 0
+            )
+        )
         page.confidence_operator.setCurrentIndex(
             page.confidence_operator.findData("at_most")
         )
         page.confidence_threshold.setValue(0.45)
 
+        self.assertEqual(page.issue_table.rowCount(), 3)
+        self.assertIn("点击“开始筛选”", page.location_status.text())
+        page.apply_filters_button.click()
         self.assertEqual(page.issue_table.rowCount(), 1)
         self.assertEqual(page.issue_table.item(0, 0).text(), "low-camera-a-30")
         self.assertIn("筛选后显示 1/3", page.location_status.text())
@@ -493,9 +508,12 @@ class QualityPageTests(unittest.TestCase):
                     quality_page.camera_filter.findData("camA")
                 )
                 self.application.processEvents()
+                self.assertEqual(correction.issue_list.count(), 2)
+                quality_page.apply_filters_button.click()
+                self.application.processEvents()
                 self.assertEqual(correction.issue_list.count(), 1)
                 queue_item = correction.issue_list.item(0)
-                self.assertIn("camA · 原始帧 12 · 人物 1 · left_wrist", queue_item.text())
+                self.assertIn("camA · 原始帧 12 · 人物 0 · left_wrist", queue_item.text())
                 correction.issue_list.itemClicked.emit(queue_item)
                 self.application.processEvents()
 
