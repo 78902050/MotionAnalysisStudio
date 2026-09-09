@@ -87,7 +87,8 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_exe.ps1 -Executable outpu
 ## 交接包说明
 
 - `MotionAnalysisStudio-codex-phase-9.bundle`：可离线克隆的 Git 分支及历史，是精确恢复代码状态的首选离线文件。
-- `MotionAnalysisStudio-source-2026-09-09.zip`：不含 `.git`、`.venv`、构建输出和工作缓存的源码快照；会附带当前 `docs` 中未跟踪的历史审查资料，便于人工查阅。
+- `MotionAnalysisStudio-source-2026-09-09.zip`：从最终 Git 提交生成，不含 `.git`、`.venv`、构建输出、字节码缓存和未跟踪文件的可复现源码快照。
+- `MotionAnalysisStudio-untracked-review-docs-2026-09-09.zip`：四份未跟踪历史审查文档的独立补充包，只用于查阅，不会自动覆盖 Git 中的文件。
 - `handoff-manifest.txt`：记录最终提交、分支、远端、文件清单和验证结果。
 - `MotionAnalysisStudio.exe` 不重复放入交接 ZIP；如需直接试用，可单独复制 `outputs/build/dist/MotionAnalysisStudio.exe`。
 
