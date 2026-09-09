@@ -3,10 +3,20 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QSettings, Qt
+from PySide6.QtCore import QObject, QPoint, QSettings, Qt, Signal
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QScrollArea, QSplitter
 
+from app.domain.addresses import FrameAddress
 from app.gui.pages.correction_page import CorrectionPage
+
+
+class _ManualFrameProvider(QObject):
+    frame_ready = Signal(str, int, object)
+    frame_failed = Signal(str, int, str)
+
+    def request(self, _address: object) -> None:
+        pass
 
 
 class CorrectionPageTests(unittest.TestCase):
@@ -190,6 +200,21 @@ class CorrectionPageTests(unittest.TestCase):
 
         self.assertFalse(page._play_timer.isActive())
         self.assertEqual(page.play_button.text(), "播放")
+        page.close()
+
+    def test_playback_waits_for_current_video_frame_before_advancing_skeleton(self) -> None:
+        page = CorrectionPage(provider=_ManualFrameProvider())
+        page.set_pose_inventory({"cam01": [4, 7, 10]})
+        page.play_button.click()
+        page._play_next_frame()
+        page.set_view_addresses({"cam01": FrameAddress("cam01", "raw", 7)})
+
+        page._play_next_frame()
+        self.assertEqual(page.timeline.value(), 7)
+        page._on_frame_ready("cam01", 7, QImage(8, 8, QImage.Format.Format_RGB32))
+        page._play_next_frame()
+
+        self.assertEqual(page.timeline.value(), 10)
         page.close()
 
     def test_empty_project_clears_camera_bindings_from_previous_project(self) -> None:

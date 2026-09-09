@@ -53,6 +53,11 @@ class _CameraDecodeThread(QThread):
         group: str,
     ) -> None:
         with self._condition:
+            if group == "navigation":
+                self._queue = [
+                    item for item in self._queue if item[2].group != "navigation"
+                ]
+                heapq.heapify(self._queue)
             request = _DecodeRequest(
                 priority,
                 self._sequence,

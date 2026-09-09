@@ -43,6 +43,17 @@ class _FakeCapture:
         self.opened = False
 
 
+class _BlockingCapture(_FakeCapture):
+    read_started = threading.Event()
+    allow_read = threading.Event()
+
+    def read(self):
+        type(self).thread_ids.append(threading.get_ident())
+        type(self).read_started.set()
+        type(self).allow_read.wait(timeout=1)
+        return True, np.full((8, 8, 3), self.position % 255, dtype=np.uint8)
+
+
 class FrameProviderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -52,6 +63,8 @@ class FrameProviderTests(unittest.TestCase):
         _FakeCapture.thread_ids.clear()
         _FakeCapture.instances.clear()
         _FakeCapture.read_delay = 0.002
+        _BlockingCapture.read_started.clear()
+        _BlockingCapture.allow_read.clear()
         self.provider = MultiViewFrameProvider(cache_capacity=5)
         self.provider.set_project(
             "project-a",
@@ -78,13 +91,25 @@ class FrameProviderTests(unittest.TestCase):
     def test_video_capture_runs_on_worker_and_cache_is_bounded(self) -> None:
         gui_thread = threading.get_ident()
         with patch("app.media.frame_provider.cv2.VideoCapture", _FakeCapture):
-            for frame in range(6):
-                self.provider.request(FrameAddress("cam01", "raw", frame))
+            self.provider.prefetch(
+                FrameAddress("cam01", "raw", frame) for frame in range(6)
+            )
             self.assertTrue(self._wait_for(lambda: len(self.ready) >= 6))
 
         self.assertTrue(_FakeCapture.thread_ids)
         self.assertTrue(all(thread_id != gui_thread for thread_id in _FakeCapture.thread_ids))
         self.assertLessEqual(self.provider.cache_size, 5)
+
+    def test_navigation_discards_queued_intermediate_frames(self) -> None:
+        with patch("app.media.frame_provider.cv2.VideoCapture", _BlockingCapture):
+            self.provider.request(FrameAddress("cam01", "raw", 0))
+            self.assertTrue(self._wait_for(_BlockingCapture.read_started.is_set))
+            self.provider.request(FrameAddress("cam01", "raw", 1))
+            self.provider.request(FrameAddress("cam01", "raw", 2))
+            _BlockingCapture.allow_read.set()
+            self.assertTrue(self._wait_for(lambda: any(frame == 2 for _camera, frame, _image in self.ready)))
+
+        self.assertEqual([frame for _camera, frame, _image in self.ready], [0, 2])
 
     def test_project_switch_discards_old_results(self) -> None:
         with patch("app.media.frame_provider.cv2.VideoCapture", _FakeCapture):

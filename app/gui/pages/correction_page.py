@@ -328,6 +328,7 @@ class CorrectionPage(QWidget):
         self._view_addresses: dict[str, FrameAddress] = {}
         self._view_failures: dict[str, str] = {}
         self._topologies = SkeletonTopologyRepository()
+        self._playback_waiting_for_video = False
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(33)
         self._play_timer.timeout.connect(self._play_next_frame)
@@ -655,15 +656,19 @@ class CorrectionPage(QWidget):
         if self.timeline.value() >= frames[-1]:
             self.timeline.setValue(frames[0])
             self._emit_browse_request()
+        self._playback_waiting_for_video = False
         self._play_timer.start()
         self.play_button.setText("暂停")
 
     def stop_playback(self) -> None:
         self._play_timer.stop()
+        self._playback_waiting_for_video = False
         if hasattr(self, "play_button"):
             self.play_button.setText("播放")
 
     def _play_next_frame(self) -> None:
+        if self._playback_waiting_for_video:
+            return
         frames = self._pose_inventory.get(self.camera_selector.currentText(), ())
         if not frames:
             self.stop_playback()
@@ -673,6 +678,7 @@ class CorrectionPage(QWidget):
         if next_frame is None:
             self.stop_playback()
             return
+        self._playback_waiting_for_video = self.provider is not None
         self.timeline.setValue(next_frame)
         self._emit_browse_request()
 
@@ -1149,6 +1155,12 @@ class CorrectionPage(QWidget):
             if card.property("camera") == camera:
                 self._canvases[index].set_frame(image)
                 self._view_labels[index].setText(self._video_status(camera, f"帧 {frame}"))
+        if (
+            self._play_timer.isActive()
+            and self._playback_waiting_for_video
+            and camera == self.camera_selector.currentText()
+        ):
+            self._playback_waiting_for_video = False
 
     def _on_frame_failed(self, camera: str, frame: int, reason: str) -> None:
         if self._expected_frames.get(camera) != frame:
@@ -1158,3 +1170,9 @@ class CorrectionPage(QWidget):
                 self._view_labels[index].setText(
                     self._video_status(camera, f"帧 {frame} · {reason}")
                 )
+        if (
+            self._play_timer.isActive()
+            and self._playback_waiting_for_video
+            and camera == self.camera_selector.currentText()
+        ):
+            self._playback_waiting_for_video = False
