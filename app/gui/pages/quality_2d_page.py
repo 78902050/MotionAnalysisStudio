@@ -8,6 +8,8 @@ from typing import Mapping
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHeaderView,
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -23,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.project.manager import ProjectManager
+from app.domain.issues import QualityIssue
 from app.quality.model import QualityReport
 from app.quality.report_store import QualityReportStore
 from app.quality.viewer import QualityComparisonView, QualityViewerModel
@@ -215,11 +219,12 @@ class _QualityPageBase(QWidget):
             self._update_issue_pagination(0)
             self.issue_table.setUpdatesEnabled(True)
             return
-        total = len(self.viewer_model.issues)
+        issues = self._issues_for_display()
+        total = len(issues)
         page_count = max(1, (total + self._ISSUES_PER_PAGE - 1) // self._ISSUES_PER_PAGE)
         self._issue_page = min(self._issue_page, page_count - 1)
         start = self._issue_page * self._ISSUES_PER_PAGE
-        visible_issues = self.viewer_model.issues[start : start + self._ISSUES_PER_PAGE]
+        visible_issues = issues[start : start + self._ISSUES_PER_PAGE]
         self.issue_table.setRowCount(len(visible_issues))
         for row, issue in enumerate(visible_issues):
             location = issue.location_error or _target_text(issue.target)
@@ -244,13 +249,18 @@ class _QualityPageBase(QWidget):
     def _change_issue_page(self, offset: int) -> None:
         if self.viewer_model is None:
             return
-        total = len(self.viewer_model.issues)
+        total = len(self._issues_for_display())
         page_count = max(1, (total + self._ISSUES_PER_PAGE - 1) // self._ISSUES_PER_PAGE)
         requested = min(max(0, self._issue_page + offset), page_count - 1)
         if requested == self._issue_page:
             return
         self._issue_page = requested
         self._fill_issues()
+
+    def _issues_for_display(self):
+        if self.viewer_model is None:
+            return ()
+        return self.viewer_model.issues
 
     def _update_issue_pagination(self, total: int) -> None:
         page_count = (total + self._ISSUES_PER_PAGE - 1) // self._ISSUES_PER_PAGE if total else 0
@@ -292,6 +302,9 @@ class _QualityPageBase(QWidget):
 
 class Quality2DPage(_QualityPageBase):
     scan_requested = Signal()
+    _TWO_DIMENSIONAL_KINDS = frozenset(
+        {"low_confidence", "missing", "reprojection", "mapping_missing"}
+    )
 
     def __init__(
         self,
@@ -304,19 +317,73 @@ class Quality2DPage(_QualityPageBase):
             project,
             parent,
         )
+        filters = QGridLayout()
+        filters.setHorizontalSpacing(8)
+        filters.setVerticalSpacing(6)
+        filters.addWidget(QLabel("相机"), 0, 0)
+        self.camera_filter = QComboBox()
+        self.camera_filter.setObjectName("quality_2d_camera_filter")
+        self.camera_filter.addItem("全部相机", None)
+        filters.addWidget(self.camera_filter, 0, 1)
+        filters.addWidget(QLabel("关键点"), 0, 2)
+        self.keypoint_filter = QComboBox()
+        self.keypoint_filter.setObjectName("quality_2d_keypoint_filter")
+        self.keypoint_filter.addItem("全部关键点", None)
+        filters.addWidget(self.keypoint_filter, 0, 3)
+        filters.addWidget(QLabel("帧范围"), 1, 0)
+        self.frame_start_filter = QSpinBox()
+        self.frame_start_filter.setObjectName("quality_2d_frame_start_filter")
+        self.frame_start_filter.setRange(0, 2_147_483_647)
+        self.frame_start_filter.setValue(0)
+        filters.addWidget(self.frame_start_filter, 1, 1)
+        filters.addWidget(QLabel("至"), 1, 2)
+        self.frame_end_filter = QSpinBox()
+        self.frame_end_filter.setObjectName("quality_2d_frame_end_filter")
+        self.frame_end_filter.setRange(0, 2_147_483_647)
+        self.frame_end_filter.setValue(2_147_483_647)
+        filters.addWidget(self.frame_end_filter, 1, 3)
+        filters.addWidget(QLabel("置信度"), 2, 0)
+        self.confidence_operator = QComboBox()
+        self.confidence_operator.setObjectName("quality_2d_confidence_operator")
+        self.confidence_operator.addItem("全部", "all")
+        self.confidence_operator.addItem("≤", "at_most")
+        self.confidence_operator.addItem("≥", "at_least")
+        filters.addWidget(self.confidence_operator, 2, 1)
+        self.confidence_threshold = QDoubleSpinBox()
+        self.confidence_threshold.setObjectName("quality_2d_confidence_threshold")
+        self.confidence_threshold.setRange(0.0, 1.0)
+        self.confidence_threshold.setDecimals(3)
+        self.confidence_threshold.setSingleStep(0.05)
+        self.confidence_threshold.setValue(0.5)
+        filters.addWidget(self.confidence_threshold, 2, 2)
+        self.reset_filters_button = QPushButton("清除筛选")
+        self.reset_filters_button.setObjectName("quality_2d_reset_filters")
+        filters.addWidget(self.reset_filters_button, 2, 3)
+        self._content_layout.insertLayout(2, filters)
+
         actions = QHBoxLayout()
         self.scan_button = QPushButton("开始二维质检")
         self.scan_button.setObjectName("quality_2d_scan_button")
         self.scan_button.clicked.connect(self.scan_requested.emit)
         actions.addWidget(self.scan_button)
         actions.addStretch(1)
-        self._content_layout.insertLayout(2, actions)
+        self._content_layout.insertLayout(3, actions)
 
         self.scan_progress = QProgressBar()
         self.scan_progress.setObjectName("quality_2d_scan_progress")
         self.scan_progress.setTextVisible(True)
         self.scan_progress.setVisible(False)
-        self._content_layout.insertWidget(3, self.scan_progress)
+        self._content_layout.insertWidget(4, self.scan_progress)
+        self.camera_filter.currentIndexChanged.connect(self._apply_filters)
+        self.keypoint_filter.currentIndexChanged.connect(self._apply_filters)
+        self.frame_start_filter.valueChanged.connect(self._apply_filters)
+        self.frame_end_filter.valueChanged.connect(self._apply_filters)
+        self.confidence_operator.currentIndexChanged.connect(self._apply_filters)
+        self.confidence_threshold.valueChanged.connect(self._apply_filters)
+        self.reset_filters_button.clicked.connect(self._reset_filters)
+        if self.viewer_model is not None:
+            self._refresh_filter_options()
+            self._apply_filters()
 
     def set_scan_running(self, running: bool) -> None:
         self.scan_button.setEnabled(not running)
@@ -338,20 +405,24 @@ class Quality2DPage(_QualityPageBase):
             f"正在读取 {completed}/{total} 个二维姿态文件（%p%）"
         )
 
-    def set_report(
-        self,
-        report: QualityReport,
-        manifest: Mapping[str, object] | None = None,
-    ) -> None:
-        two_dimensional = tuple(
+    @classmethod
+    def issues_for_report(cls, report: QualityReport) -> tuple[QualityIssue, ...]:
+        return tuple(
             issue
             for issue in report.issues()
-            if issue.kind in {"low_confidence", "missing", "reprojection", "mapping_missing"}
+            if issue.kind in cls._TWO_DIMENSIONAL_KINDS
             or (
                 issue.kind == "input_invalid"
                 and issue.evidence.get("layer") == "pose"
             )
         )
+
+    def set_report(
+        self,
+        report: QualityReport,
+        manifest: Mapping[str, object] | None = None,
+    ) -> None:
+        two_dimensional = self.issues_for_report(report)
         super().set_report(
             QualityReport(
                 report.report_id,
@@ -362,6 +433,107 @@ class Quality2DPage(_QualityPageBase):
             ),
             manifest,
         )
+        if hasattr(self, "camera_filter"):
+            self._refresh_filter_options()
+            self._apply_filters()
+
+    def _refresh_filter_options(self) -> None:
+        if self.viewer_model is None:
+            return
+        previous_camera = self.camera_filter.currentData()
+        previous_keypoint = self.keypoint_filter.currentData()
+        cameras = sorted(
+            {
+                row.target.address.camera
+                for row in self.viewer_model.issues
+                if row.target is not None
+            },
+            key=str.casefold,
+        )
+        keypoints = sorted(
+            {
+                row.target.keypoint.keypoint_name
+                for row in self.viewer_model.issues
+                if row.target is not None
+            },
+            key=str.casefold,
+        )
+        for combo, label, values, selected in (
+            (self.camera_filter, "全部相机", cameras, previous_camera),
+            (self.keypoint_filter, "全部关键点", keypoints, previous_keypoint),
+        ):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(label, None)
+            for value in values:
+                combo.addItem(value, value)
+            selected_index = combo.findData(selected)
+            combo.setCurrentIndex(selected_index if selected_index >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _issues_for_display(self):
+        issues = super()._issues_for_display()
+        if not hasattr(self, "camera_filter"):
+            return issues
+        camera = self.camera_filter.currentData()
+        keypoint = self.keypoint_filter.currentData()
+        first_frame = self.frame_start_filter.value()
+        last_frame = self.frame_end_filter.value()
+        confidence_mode = self.confidence_operator.currentData()
+        threshold = self.confidence_threshold.value()
+
+        def matches(row) -> bool:
+            target = row.target
+            if camera is not None and (target is None or target.address.camera != camera):
+                return False
+            if keypoint is not None and (
+                target is None or target.keypoint.keypoint_name != keypoint
+            ):
+                return False
+            if first_frame > 0 or last_frame < 2_147_483_647:
+                if target is None or not first_frame <= target.address.frame <= last_frame:
+                    return False
+            confidence = row.evidence.get("confidence")
+            if confidence_mode == "at_most":
+                if not _is_number(confidence) or float(confidence) > threshold:
+                    return False
+            elif confidence_mode == "at_least":
+                if not _is_number(confidence) or float(confidence) < threshold:
+                    return False
+            return True
+
+        return tuple(row for row in issues if matches(row))
+
+    def _apply_filters(self, *_ignored: object) -> None:
+        if self.viewer_model is None or not hasattr(self, "camera_filter"):
+            return
+        self._issue_page = 0
+        self._fill_issues()
+        shown = len(self._issues_for_display())
+        self.location_status.setText(
+            f"筛选后显示 {shown}/{len(self.viewer_model.issues)} 个问题；点击可定位问题进入二维修正。"
+        )
+
+    def _reset_filters(self) -> None:
+        controls = (
+            self.camera_filter,
+            self.keypoint_filter,
+            self.frame_start_filter,
+            self.frame_end_filter,
+            self.confidence_operator,
+            self.confidence_threshold,
+        )
+        for control in controls:
+            control.blockSignals(True)
+        self.camera_filter.setCurrentIndex(0)
+        self.keypoint_filter.setCurrentIndex(0)
+        self.frame_start_filter.setValue(0)
+        self.frame_end_filter.setValue(2_147_483_647)
+        self.confidence_operator.setCurrentIndex(0)
+        self.confidence_threshold.setValue(0.5)
+        for control in controls:
+            control.blockSignals(False)
+        self._apply_filters()
 
 
 def _format_metrics(metrics: Mapping[str, object], empty_text: str) -> str:
@@ -399,6 +571,10 @@ def _issue_measurement(evidence: Mapping[str, object]) -> str:
     if isinstance(error, (int, float)) and not isinstance(error, bool):
         return f"{float(error):.3f} px"
     return "—"
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _target_text(target: object) -> str:

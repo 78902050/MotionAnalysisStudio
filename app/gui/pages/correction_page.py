@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.domain.addresses import CorrectionTarget
+from app.domain.issues import QualityIssue
 from app.application.dirty_state import DirtyState
 from app.visualization.skeleton import SkeletonTopologyRepository, skeleton_edge_side
 
@@ -34,6 +36,30 @@ from ..theme import palette_for_application
 
 if TYPE_CHECKING:
     from app.application.quality_correction_service import CorrectionResolution
+
+
+def _quality_issue_label(issue: QualityIssue) -> str:
+    if issue.target is None:
+        return f"不可定位 · {issue.message}"
+    frame_label = "原始帧" if issue.target.timeline == "raw" else "帧"
+    person_label = (
+        f"人物 {issue.person.raw_person_index + 1}"
+        if issue.person is not None and issue.person.raw_person_index is not None
+        else issue.person.project_person_id
+        if issue.person is not None
+        else "人物未知"
+    )
+    keypoint_label = issue.keypoint.keypoint_name if issue.keypoint is not None else "关节点未知"
+    confidence = issue.evidence.get("confidence")
+    measurement = (
+        f" · 置信度 {float(confidence):.3f}"
+        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
+        else ""
+    )
+    return (
+        f"{issue.target.camera} · {frame_label} {issue.target.frame} · "
+        f"{person_label} · {keypoint_label}{measurement}\n{issue.message}"
+    )
 
 
 class CorrectionCanvas(QWidget):
@@ -297,6 +323,8 @@ class CorrectionCanvas(QWidget):
 class CorrectionPage(QWidget):
     frame_requested = Signal(int)
     browse_requested = Signal(str, int, int, int)
+    quality_issue_requested = Signal(object)
+    _ISSUES_PER_PAGE = 200
 
     def __init__(
         self,
@@ -324,6 +352,8 @@ class CorrectionPage(QWidget):
         self._camera_names: list[str] = []
         self._camera_extents: dict[str, tuple[int, int]] = {}
         self._pose_inventory: dict[str, tuple[int, ...]] = {}
+        self._quality_issues: tuple[QualityIssue, ...] = ()
+        self._quality_issue_page = 0
         self._suppress_browse = False
         self._view_addresses: dict[str, FrameAddress] = {}
         self._view_failures: dict[str, str] = {}
@@ -390,11 +420,27 @@ class CorrectionPage(QWidget):
         self.issue_filter = QComboBox()
         self.issue_filter.addItems(["全部问题", "待处理", "已处理", "已延期", "已忽略"])
         self.issue_filter.setObjectName("correction_issue_filter")
+        self.issue_filter.currentIndexChanged.connect(self._reset_issue_page)
         layout.addWidget(self.issue_filter)
         self.issue_list = QListWidget()
         self.issue_list.setObjectName("correction_issue_list")
-        self.issue_list.addItem("暂无质量问题")
+        self.issue_list.itemClicked.connect(self._request_quality_issue)
         layout.addWidget(self.issue_list, 1)
+        queue_pagination = QHBoxLayout()
+        self.previous_queue_page_button = QPushButton("上一页")
+        self.previous_queue_page_button.setObjectName("correction_previous_issue_page")
+        self.next_queue_page_button = QPushButton("下一页")
+        self.next_queue_page_button.setObjectName("correction_next_issue_page")
+        self.issue_page_label = QLabel("第 0/0 页")
+        self.issue_page_label.setObjectName("correction_issue_page")
+        self.previous_queue_page_button.clicked.connect(
+            lambda: self._change_issue_page(-1)
+        )
+        self.next_queue_page_button.clicked.connect(lambda: self._change_issue_page(1))
+        queue_pagination.addWidget(self.previous_queue_page_button)
+        queue_pagination.addWidget(self.issue_page_label)
+        queue_pagination.addWidget(self.next_queue_page_button)
+        layout.addLayout(queue_pagination)
         navigation = QHBoxLayout()
         self.previous_button = QPushButton("上一问题")
         self.previous_button.setObjectName("correction_previous_button")
@@ -847,8 +893,7 @@ class CorrectionPage(QWidget):
         self.x_value.setValue(0)
         self.y_value.setValue(0)
         self.confidence_value.setValue(0)
-        self.issue_list.clear()
-        self.issue_list.addItem("暂无质量问题")
+        self.set_quality_issues(())
         self.person_selector.clear()
         self.person_selector.addItem("人物 0", 0)
         self.keypoint_selector.clear()
@@ -879,6 +924,87 @@ class CorrectionPage(QWidget):
         self.raw_frame.setText("等待映射")
         self.person_value.setText(target.person.project_person_id)
         self.keypoint_value.setText(target.keypoint.keypoint_name)
+
+    def set_quality_issues(self, issues: tuple[QualityIssue, ...] | list[QualityIssue]) -> None:
+        self._quality_issues = tuple(issues)
+        self._quality_issue_page = 0
+        self._fill_issue_queue()
+
+    def _filtered_quality_issues(self) -> tuple[QualityIssue, ...]:
+        dispositions = {
+            "待处理": "pending",
+            "已处理": "handled",
+            "已延期": "deferred",
+            "已忽略": "ignored",
+        }
+        requested = dispositions.get(self.issue_filter.currentText())
+        if requested is None:
+            return self._quality_issues
+        return tuple(
+            issue for issue in self._quality_issues if issue.disposition == requested
+        )
+
+    def _fill_issue_queue(self) -> None:
+        issues = self._filtered_quality_issues()
+        page_count = (len(issues) + self._ISSUES_PER_PAGE - 1) // self._ISSUES_PER_PAGE
+        if page_count:
+            self._quality_issue_page = min(self._quality_issue_page, page_count - 1)
+        else:
+            self._quality_issue_page = 0
+        start = self._quality_issue_page * self._ISSUES_PER_PAGE
+        visible = issues[start : start + self._ISSUES_PER_PAGE]
+        self.issue_list.blockSignals(True)
+        self.issue_list.clear()
+        if visible:
+            for issue in visible:
+                item = QListWidgetItem(_quality_issue_label(issue))
+                item.setData(Qt.ItemDataRole.UserRole, issue)
+                item.setToolTip(issue.message)
+                self.issue_list.addItem(item)
+        else:
+            self.issue_list.addItem("暂无质量问题")
+        self.issue_list.blockSignals(False)
+        current = self._quality_issue_page + 1 if page_count else 0
+        self.issue_page_label.setText(
+            f"第 {current}/{page_count} 页 · 共 {len(issues)} 项"
+        )
+        self.previous_queue_page_button.setEnabled(self._quality_issue_page > 0)
+        self.next_queue_page_button.setEnabled(
+            page_count > 0 and self._quality_issue_page < page_count - 1
+        )
+
+    def _reset_issue_page(self, *_ignored: object) -> None:
+        self._quality_issue_page = 0
+        self._fill_issue_queue()
+
+    def _change_issue_page(self, offset: int) -> None:
+        issues = self._filtered_quality_issues()
+        page_count = (len(issues) + self._ISSUES_PER_PAGE - 1) // self._ISSUES_PER_PAGE
+        requested = min(max(0, self._quality_issue_page + offset), max(0, page_count - 1))
+        if requested == self._quality_issue_page:
+            return
+        self._quality_issue_page = requested
+        self._fill_issue_queue()
+
+    def _request_quality_issue(self, item: QListWidgetItem) -> None:
+        issue = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(issue, QualityIssue):
+            self.quality_issue_requested.emit(issue)
+
+    def _select_quality_issue(self, issue_id: str) -> None:
+        issues = self._filtered_quality_issues()
+        index = next(
+            (position for position, issue in enumerate(issues) if issue.issue_id == issue_id),
+            None,
+        )
+        if index is None:
+            return
+        self._quality_issue_page = index // self._ISSUES_PER_PAGE
+        self._fill_issue_queue()
+        row = index % self._ISSUES_PER_PAGE
+        item = self.issue_list.item(row)
+        if item is not None:
+            self.issue_list.setCurrentItem(item)
 
     def open_resolution(
         self,
@@ -923,8 +1049,7 @@ class CorrectionPage(QWidget):
                 max(self.timeline.maximum(), timeline_frame),
             )
         self.timeline.setValue(timeline_frame)
-        self.issue_list.clear()
-        self.issue_list.addItem(resolution.issue_id)
+        self._select_quality_issue(resolution.issue_id)
         self._fill_browse_selectors(resolution)
         self._suppress_browse = False
         enabled = bool(resolution.can_edit and session is not None)

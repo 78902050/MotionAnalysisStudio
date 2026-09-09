@@ -207,6 +207,56 @@ class QualityPageTests(unittest.TestCase):
         self.assertIn("第 2/2 页 · 共 205 项", page.issue_page_label.text())
         page.close()
 
+    def test_2d_page_filters_by_camera_frame_keypoint_and_confidence(self) -> None:
+        issues = (
+            QualityIssue(
+                "low-camera-a-4",
+                "low_confidence",
+                "warning",
+                FrameAddress("camA", "raw", 4),
+                PersonAddress("raw-0", raw_person_index=0),
+                KeypointAddress("HALPE_26", "LWrist", 9),
+                "camA 第 4 帧左手腕置信度低",
+                {"confidence": 0.2, "threshold": 0.5},
+            ),
+            QualityIssue(
+                "low-camera-b-16",
+                "low_confidence",
+                "warning",
+                FrameAddress("camB", "raw", 16),
+                PersonAddress("raw-0", raw_person_index=0),
+                KeypointAddress("HALPE_26", "RWrist", 10),
+                "camB 第 16 帧右手腕置信度低",
+                {"confidence": 0.3, "threshold": 0.5},
+            ),
+            QualityIssue(
+                "low-camera-a-30",
+                "low_confidence",
+                "warning",
+                FrameAddress("camA", "raw", 30),
+                PersonAddress("raw-0", raw_person_index=0),
+                KeypointAddress("HALPE_26", "RWrist", 10),
+                "camA 第 30 帧右手腕置信度低",
+                {"confidence": 0.4, "threshold": 0.5},
+            ),
+        )
+        page = Quality2DPage()
+        page.set_report(_report(*issues), {})
+
+        page.camera_filter.setCurrentIndex(page.camera_filter.findData("camA"))
+        page.frame_start_filter.setValue(20)
+        page.frame_end_filter.setValue(30)
+        page.keypoint_filter.setCurrentIndex(page.keypoint_filter.findData("RWrist"))
+        page.confidence_operator.setCurrentIndex(
+            page.confidence_operator.findData("at_most")
+        )
+        page.confidence_threshold.setValue(0.45)
+
+        self.assertEqual(page.issue_table.rowCount(), 1)
+        self.assertEqual(page.issue_table.item(0, 0).text(), "low-camera-a-30")
+        self.assertIn("筛选后显示 1/3", page.location_status.text())
+        page.close()
+
     def test_project_manifest_and_current_report_feed_quality_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = ProjectManager.create(Path(directory) / "项目", "质量页面")
@@ -415,9 +465,13 @@ class QualityPageTests(unittest.TestCase):
             window = MainWindow()
             try:
                 self.assertTrue(window.open_project(project))
-                self.assertTrue(window._open_correction_target(_report(issue).target(issue.issue_id)))
-
                 correction = window._pages["correction_2d"]
+                self.assertEqual(correction.issue_list.count(), 1)
+                queue_item = correction.issue_list.item(0)
+                self.assertIn("camA · 原始帧 12 · 人物 1 · left_wrist", queue_item.text())
+                correction.issue_list.itemClicked.emit(queue_item)
+                self.application.processEvents()
+
                 self.assertEqual(correction.raw_frame.text(), "12")
                 self.assertEqual(
                     correction._view_addresses["camA"],

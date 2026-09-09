@@ -29,6 +29,7 @@ from app.application.correction_rerun_launcher import CorrectionRerunLauncher
 from app.application.pipeline_launcher import PipelineLauncher
 from app.application.quality_correction_service import QualityCorrectionService
 from app.domain.addresses import CorrectionTarget, FrameAddress
+from app.domain.issues import QualityIssue
 from app.media.frame_provider import MultiViewFrameProvider
 from app.project.manager import ProjectManager
 from app.project.discovery import ExistingResultDiscovery
@@ -208,6 +209,7 @@ class MainWindow(QMainWindow):
         self.controller.register_editor("correction_2d", correction_page)
         correction_page.frame_requested.connect(self._open_correction_frame)
         correction_page.browse_requested.connect(self._open_pose_frame)
+        correction_page.quality_issue_requested.connect(self._open_correction_issue)
         pipeline_page = self._pages["pipeline"]
         assert isinstance(pipeline_page, PipelinePage)
         self.controller.register_editor("pose2sim_config", pipeline_page)
@@ -444,6 +446,7 @@ class MainWindow(QMainWindow):
             quality_page = self._pages.get(page_id)
             if isinstance(quality_page, (Quality2DPage, Quality3DPage)):
                 quality_page.set_project(project)
+        self._refresh_correction_issue_queue(project)
         association_page = self._pages.get("association")
         if isinstance(association_page, AssociationPage):
             association_page.set_project(project)
@@ -608,30 +611,51 @@ class MainWindow(QMainWindow):
                 page = self._pages.get(page_id)
                 if isinstance(page, (Quality2DPage, Quality3DPage)):
                     page.set_project(project)
+            self._refresh_correction_issue_queue(project)
             self.statusBar().showMessage("二维质量检查已完成")
         elif result.status == "failed":
             self.statusBar().showMessage(f"二维质量检查失败：{result.error}")
         elif result.status == "cancelled":
             self.statusBar().showMessage("二维质量检查已取消")
 
-    def _open_correction_target(self, target: CorrectionTarget) -> bool:
+    def _refresh_correction_issue_queue(self, project: ProjectManager) -> None:
+        correction_page = self._pages.get("correction_2d")
+        if not isinstance(correction_page, CorrectionPage):
+            return
+        try:
+            report = self.quality_correction_service.load_report() if self.quality_correction_service else None
+        except (OSError, ValueError, KeyError):
+            report = None
+        correction_page.set_quality_issues(
+            Quality2DPage.issues_for_report(report) if report is not None else ()
+        )
+
+    def _prepare_correction_open(self):
         service = self.quality_correction_service
         correction_page = self._pages.get("correction_2d")
         if service is None or not isinstance(correction_page, CorrectionPage):
             self.statusBar().showMessage("请先打开质量报告所属项目")
-            return False
+            return None
         if correction_page.dirty_state().dirty:
             decision = self._ask_dirty_decision()
             if decision == "cancel":
                 self.statusBar().showMessage("已取消切换修正目标")
-                return False
+                return None
             if decision == "save":
                 if not correction_page.save():
                     self.statusBar().showMessage("保存失败，仍停留在原修正目标")
-                    return False
+                    return None
             else:
                 correction_page.discard_unsaved()
-        resolution = service.resolve_target(target)
+        return service, correction_page
+
+    def _show_correction_resolution(
+        self,
+        service: QualityCorrectionService,
+        correction_page: CorrectionPage,
+        resolution,
+        reference_camera: str | None,
+    ) -> bool:
         session = service.create_session(resolution) if resolution.can_edit else None
         correction_page.open_resolution(resolution, session)
         cameras = tuple(
@@ -645,18 +669,46 @@ class MainWindow(QMainWindow):
             reference_camera = (
                 resolution.edit_target.address.camera
                 if resolution.edit_target is not None
-                else target.address.camera
+                else reference_camera
             )
-            addresses, failures, _synchronized_frame = service.linked_raw_view_addresses(
-                reference_camera,
-                resolution.raw_frame,
-                cameras,
-            )
-            correction_page.set_view_addresses(addresses, failures)
+            if reference_camera is not None:
+                addresses, failures, _synchronized_frame = service.linked_raw_view_addresses(
+                    reference_camera,
+                    resolution.raw_frame,
+                    cameras,
+                )
+                correction_page.set_view_addresses(addresses, failures)
         self.navigate("correction_2d")
         if resolution.blocker:
             self.statusBar().showMessage(resolution.blocker)
         return True
+
+    def _open_correction_target(self, target: CorrectionTarget) -> bool:
+        prepared = self._prepare_correction_open()
+        if prepared is None:
+            return False
+        service, correction_page = prepared
+        return self._show_correction_resolution(
+            service,
+            correction_page,
+            service.resolve_target(target),
+            target.address.camera,
+        )
+
+    @Slot(object)
+    def _open_correction_issue(self, issue: object) -> bool:
+        if not isinstance(issue, QualityIssue):
+            return False
+        prepared = self._prepare_correction_open()
+        if prepared is None:
+            return False
+        service, correction_page = prepared
+        return self._show_correction_resolution(
+            service,
+            correction_page,
+            service.resolve_issue(issue),
+            issue.target.camera if issue.target is not None else None,
+        )
 
     @Slot(str, int)
     def _open_playback_target(self, person_id: str, frame: int) -> None:
