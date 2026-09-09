@@ -25,6 +25,7 @@ class QualityIssueView:
     report_version: str
     target: CorrectionTarget | None
     location_error: str | None
+    evidence: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,7 @@ class QualityViewerModel:
             report_version=self.report.report_id,
             target=target,
             location_error=reason,
+            evidence=MappingProxyType(dict(issue.evidence)),
         )
 
 

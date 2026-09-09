@@ -525,8 +525,11 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError, KeyError):
                 current_report = None
             has_trc = any((project.root / "pose-3d").glob("*.trc"))
-            if current_report is not None and (
-                not has_trc or "3d_total_points" in current_report.metrics()
+            metrics = current_report.metrics() if current_report is not None else {}
+            needs_2d_confidence_refresh = "2d_low_confidence_points" not in metrics
+            needs_trc_refresh = has_trc and "3d_total_points" not in metrics
+            if current_report is not None and not (
+                needs_2d_confidence_refresh or needs_trc_refresh
             ):
                 return
         request = TaskRequest(
@@ -605,9 +608,15 @@ class MainWindow(QMainWindow):
             and isinstance(record.get("camera_id"), str)
             and record["camera_id"].strip()
         ) if self.project is not None else ()
-        if resolution.synchronized_frame is not None:
-            addresses, failures = service.raw_view_addresses(
-                resolution.synchronized_frame,
+        if resolution.raw_frame is not None:
+            reference_camera = (
+                resolution.edit_target.address.camera
+                if resolution.edit_target is not None
+                else target.address.camera
+            )
+            addresses, failures, _synchronized_frame = service.linked_raw_view_addresses(
+                reference_camera,
+                resolution.raw_frame,
                 cameras,
             )
             correction_page.set_view_addresses(addresses, failures)

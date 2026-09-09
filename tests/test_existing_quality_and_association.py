@@ -120,6 +120,26 @@ class ExistingQualityAndAssociationTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_old_quality_report_without_2d_confidence_metrics_is_refreshed_in_background(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = ProjectManager.create(Path(directory) / "旧二维质检", "旧二维质检")
+            project.manifest["imported_artifacts"] = {"pose_2d_files": 1}
+            project.save_manifest()
+            pose = project.root / "pose" / "cam01_json" / "cam01_000001.json"
+            pose.parent.mkdir(parents=True, exist_ok=True)
+            pose.write_text(json.dumps({"version": 1.3, "people": []}), encoding="utf-8")
+            QualityReportStore(project).save(
+                QualityReport.create("old-report", {"3d_total_points": 0}, (), {})
+            )
+            window = MainWindow()
+            try:
+                self.assertTrue(window.open_project(project))
+
+                self.assertIsNotNone(window.initial_quality_handle)
+                self.assertIn("正在后台", window.statusBar().currentMessage())
+            finally:
+                window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

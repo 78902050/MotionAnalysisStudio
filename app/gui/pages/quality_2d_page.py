@@ -106,10 +106,10 @@ class _QualityPageBase(QWidget):
         issue_heading = QLabel("质量问题")
         issue_heading.setProperty("uiRole", "sectionTitle")
         layout.addWidget(issue_heading)
-        self.issue_table = QTableWidget(0, 6)
+        self.issue_table = QTableWidget(0, 7)
         self.issue_table.setObjectName("quality_issue_table")
         self.issue_table.setHorizontalHeaderLabels(
-            ["问题 ID", "严重度", "处理状态", "修改次数", "说明", "定位"]
+            ["问题 ID", "严重度", "处理状态", "修改次数", "说明", "置信度/误差", "定位"]
         )
         self.issue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.issue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -121,6 +121,7 @@ class _QualityPageBase(QWidget):
         self.issue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.issue_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.issue_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.issue_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         self.issue_table.setMinimumHeight(270)
         self.issue_table.cellClicked.connect(self._request_row_target)
         layout.addWidget(self.issue_table, 1)
@@ -200,6 +201,7 @@ class _QualityPageBase(QWidget):
                 _DISPOSITION_TEXT.get(issue.disposition, issue.disposition),
                 str(issue.modification_count),
                 issue.message,
+                _issue_measurement(issue.evidence),
                 location,
             )
             for column, value in enumerate(values):
@@ -244,9 +246,34 @@ class Quality2DPage(_QualityPageBase):
     ) -> None:
         super().__init__(
             "二维质量检查",
-            "查看相机、帧、人物和关节点定位。质量报告保持只读，点击完整目标后进入人工二维修正。",
+            "逐帧检查 Pose2Sim 二维关节点的置信度。每项明确列出相机、原始帧、人物和关节点；点击后直接进入人工二维修正。默认低置信度阈值为 0.500。",
             project,
             parent,
+        )
+
+    def set_report(
+        self,
+        report: QualityReport,
+        manifest: Mapping[str, object] | None = None,
+    ) -> None:
+        two_dimensional = tuple(
+            issue
+            for issue in report.issues()
+            if issue.kind in {"low_confidence", "missing", "reprojection", "mapping_missing"}
+            or (
+                issue.kind == "input_invalid"
+                and issue.evidence.get("layer") == "pose"
+            )
+        )
+        super().set_report(
+            QualityReport(
+                report.report_id,
+                report.generated_at,
+                report.metrics_data,
+                two_dimensional,
+                report.inputs,
+            ),
+            manifest,
         )
 
 
@@ -274,10 +301,29 @@ def _format_timestamp(value: str | None) -> str:
     return parsed.strftime("%Y-%m-%d %H:%M")
 
 
+def _issue_measurement(evidence: Mapping[str, object]) -> str:
+    confidence = evidence.get("confidence")
+    threshold = evidence.get("threshold")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+        if isinstance(threshold, (int, float)) and not isinstance(threshold, bool):
+            return f"{float(confidence):.3f} < {float(threshold):.3f}"
+        return f"{float(confidence):.3f}"
+    error = evidence.get("error")
+    if isinstance(error, (int, float)) and not isinstance(error, bool):
+        return f"{float(error):.3f} px"
+    return "—"
+
+
 def _target_text(target: object) -> str:
     if target is None:
         return "不可定位"
+    frame_label = "原始帧" if target.address.timeline == "raw" else "帧"
+    person_label = (
+        f"人物 {target.person.raw_person_index + 1}"
+        if target.person.raw_person_index is not None
+        else target.person.project_person_id
+    )
     return (
-        f"{target.address.camera} · 帧 {target.address.frame} · "
-        f"{target.person.project_person_id} · {target.keypoint.keypoint_name}"
+        f"{target.address.camera} · {frame_label} {target.address.frame} · "
+        f"{person_label} · {target.keypoint.keypoint_name}"
     )

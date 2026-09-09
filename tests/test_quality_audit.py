@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.project.manager import ProjectManager
+from app.adapters.pose2sim.pose2d_repository import HALPE_26_KEYPOINT_NAMES
 from app.quality.audit import QualityAuditService
 from app.quality.model import QualityReport
 from app.quality.report_store import QualityReportStore
@@ -138,6 +139,38 @@ class QualityAuditTests(unittest.TestCase):
             self.assertEqual(target.person.project_person_id, "person-01")
             self.assertEqual(target.keypoint.keypoint_name, "left_wrist")
             self.assertEqual(target.keypoint.source_index, 1)
+
+    def test_audit_reports_low_confidence_pose2sim_keypoints_at_the_raw_edit_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = ProjectManager.create(Path(directory), "二维置信度质检")
+            values: list[float] = []
+            for index in range(len(HALPE_26_KEYPOINT_NAMES)):
+                confidence = 0.92
+                if index == 9:  # LWrist
+                    confidence = 0.18
+                values.extend((100.0 + index, 200.0 + index, confidence))
+            _write_json(
+                project.root / "pose" / "camA_json" / "camA_000012.json",
+                {"version": 1.3, "people": [{"pose_keypoints_2d": values}]},
+            )
+
+            report = QualityAuditService(low_confidence_threshold=0.5).analyze(project)
+
+            low_confidence = [
+                issue for issue in report.issues() if issue.kind == "low_confidence"
+            ]
+            self.assertEqual(len(low_confidence), 1)
+            issue = low_confidence[0]
+            self.assertEqual(issue.target.camera, "camA")
+            self.assertEqual(issue.target.timeline, "raw")
+            self.assertEqual(issue.target.frame, 12)
+            self.assertEqual(issue.person.project_person_id, "raw-0")
+            self.assertEqual(issue.person.raw_person_index, 0)
+            self.assertEqual(issue.keypoint.keypoint_name, "LWrist")
+            self.assertEqual(issue.keypoint.source_index, 9)
+            self.assertEqual(issue.evidence["confidence"], 0.18)
+            self.assertEqual(issue.evidence["threshold"], 0.5)
+            self.assertEqual(report.metrics()["2d_low_confidence_points"], 1)
 
     def test_save_writes_current_report_and_versioned_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

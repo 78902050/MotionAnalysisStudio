@@ -114,6 +114,33 @@ class QualityCorrectionWorkflowTests(unittest.TestCase):
             })
             self.assertEqual(payload["frames"][0]["people"][1]["keypoints"]["left_wrist"]["x"], 10)
 
+    def test_raw_2d_quality_issue_opens_its_exact_person_and_frame_without_sync_mapping(self) -> None:
+        from app.application.quality_correction_service import QualityCorrectionService
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = self._project(Path(directory))
+            issue = QualityIssue(
+                "low-confidence-raw",
+                "low_confidence",
+                "warning",
+                FrameAddress("camA", "raw", 12),
+                PersonAddress("raw-0", raw_person_index=0),
+                KeypointAddress("coco17", "left_wrist", 1),
+                "左手腕置信度偏低",
+                {"confidence": 0.4, "threshold": 0.5},
+            )
+            (project.root / "synchronization" / "mapping.json").unlink()
+
+            resolution = QualityCorrectionService(project).resolve_issue(issue)
+
+            self.assertIsNone(resolution.blocker)
+            self.assertEqual(resolution.synchronized_frame, None)
+            self.assertEqual(resolution.raw_frame, 12)
+            self.assertEqual(
+                resolution.edit_target,
+                CorrectionTarget(issue.target, issue.person, issue.keypoint),
+            )
+
     def test_ambiguous_person_mapping_blocks_editing_without_guessing(self) -> None:
         from app.application.quality_correction_service import QualityCorrectionService
 

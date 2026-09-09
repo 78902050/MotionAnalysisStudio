@@ -150,6 +150,29 @@ class QualityPageTests(unittest.TestCase):
         self.assertIn("缺少关节点定位信息", page.location_status.text())
         page.close()
 
+    def test_2d_page_names_the_raw_camera_frame_person_and_keypoint(self) -> None:
+        issue = QualityIssue(
+            "low-confidence-raw",
+            "low_confidence",
+            "warning",
+            FrameAddress("camA", "raw", 12),
+            PersonAddress("raw-1", raw_person_index=1),
+            KeypointAddress("HALPE_26", "LWrist", 9),
+            "相机 camA 原始帧 12 人物 2 的 LWrist 置信度 0.180 低于阈值 0.500",
+            {"confidence": 0.18, "threshold": 0.5},
+        )
+        page = Quality2DPage()
+
+        page.set_report(_report(issue), {})
+
+        self.assertEqual(page.issue_table.rowCount(), 1)
+        self.assertEqual(
+            page.issue_table.item(0, 6).text(),
+            "camA · 原始帧 12 · 人物 2 · LWrist",
+        )
+        self.assertEqual(page.issue_table.item(0, 5).text(), "0.180 < 0.500")
+        page.close()
+
     def test_project_manifest_and_current_report_feed_quality_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = ProjectManager.create(Path(directory) / "项目", "质量页面")
@@ -310,6 +333,68 @@ class QualityPageTests(unittest.TestCase):
             self.assertIsNone(correction.resolution)
             self.assertFalse(correction.save_button.isEnabled())
             window.close()
+
+    def test_main_window_loads_raw_video_address_for_a_low_confidence_2d_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "原始二维质检"
+            project = ProjectManager.create(root, "原始二维质检")
+            project.manifest["cameras"] = [{"camera_id": "camA"}, {"camera_id": "camB"}]
+            project.save_manifest()
+            (root / "pose" / "camA.json").write_text(
+                json.dumps(
+                    {
+                        "camera": "camA",
+                        "model_name": "coco17",
+                        "keypoint_names": ["left_wrist"],
+                        "frames": [
+                            {
+                                "frame": 12,
+                                "people": [
+                                    {
+                                        "raw_person_index": 0,
+                                        "keypoints": {
+                                            "left_wrist": {
+                                                "x": 10,
+                                                "y": 20,
+                                                "confidence": 0.2,
+                                            }
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            issue = QualityIssue(
+                "low-confidence-raw",
+                "low_confidence",
+                "warning",
+                FrameAddress("camA", "raw", 12),
+                PersonAddress("raw-0", raw_person_index=0),
+                KeypointAddress("coco17", "left_wrist", 0),
+                "左手腕置信度偏低",
+                {"confidence": 0.2, "threshold": 0.5},
+            )
+            QualityReportStore(project).save(_report(issue))
+            window = MainWindow()
+            try:
+                self.assertTrue(window.open_project(project))
+                self.assertTrue(window._open_correction_target(_report(issue).target(issue.issue_id)))
+
+                correction = window._pages["correction_2d"]
+                self.assertEqual(correction.raw_frame.text(), "12")
+                self.assertEqual(
+                    correction._view_addresses["camA"],
+                    FrameAddress("camA", "raw", 12),
+                )
+                self.assertEqual(
+                    correction._view_addresses["camB"],
+                    FrameAddress("camB", "raw", 12),
+                )
+            finally:
+                window.close()
 
 
 def _locatable_issue_target():

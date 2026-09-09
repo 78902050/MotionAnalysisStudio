@@ -222,6 +222,8 @@ class QualityCorrectionService:
         report_target = self._report_target(issue)
         if report_target is None:
             return self._blocked(issue.issue_id, "质量问题缺少相机、人物或关节点定位信息")
+        if report_target.address.timeline == "raw":
+            return self._resolve_raw_pose_issue(issue.issue_id, report_target)
         synchronized_frame = self._synchronized_frame(report_target.address)
         if synchronized_frame is None:
             return self._blocked(
@@ -320,6 +322,64 @@ class QualityCorrectionService:
             synchronized_frame,
             mapping.source_frame,
             mapping.source,
+            pose_path,
+            keypoint_names,
+        )
+
+    def _resolve_raw_pose_issue(
+        self,
+        issue_id: str,
+        report_target: CorrectionTarget,
+    ) -> CorrectionResolution:
+        """Open a raw 2D audit finding without requiring synchronization or association."""
+        raw_frame = report_target.address.frame
+        pose_path, keypoint_names, pose_blocker = self._pose_source(report_target, raw_frame)
+        if pose_blocker is not None:
+            return self._blocked(
+                issue_id,
+                pose_blocker,
+                report_target,
+                raw_frame=raw_frame,
+                pose_path=pose_path,
+                keypoint_names=keypoint_names,
+            )
+        if pose_path is None:
+            return self._blocked(
+                issue_id,
+                f"缺少相机 {report_target.address.camera} 原始帧 {raw_frame} 的二维 pose 文件",
+                report_target,
+                raw_frame=raw_frame,
+                keypoint_names=keypoint_names,
+            )
+        try:
+            self._document(pose_path, keypoint_names).value_at(report_target)
+        except KeyError as exc:
+            message = str(exc)
+            subject = "关节点" if "keypoint" in message else "人物或帧"
+            return self._blocked(
+                issue_id,
+                f"无法在二维 pose 中定位{subject}：{exc}",
+                report_target,
+                raw_frame=raw_frame,
+                pose_path=pose_path,
+                keypoint_names=keypoint_names,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return self._blocked(
+                issue_id,
+                f"二维 pose 文件不可读：{exc}",
+                report_target,
+                raw_frame=raw_frame,
+                pose_path=pose_path,
+                keypoint_names=keypoint_names,
+            )
+        return CorrectionResolution(
+            issue_id,
+            report_target,
+            report_target,
+            None,
+            raw_frame,
+            "二维 pose 原始帧",
             pose_path,
             keypoint_names,
         )

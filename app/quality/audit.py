@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.adapters.pose2sim.pose2d_repository import inferred_keypoint_schema
 from app.domain.addresses import FrameAddress, KeypointAddress, PersonAddress
 from app.domain.issues import QualityIssue
 from app.analysis.model import Trajectory
@@ -18,12 +19,19 @@ from .report_store import QualityReportStore
 
 
 class QualityAuditService:
-    def __init__(self, reprojection_threshold: float = 5.0) -> None:
+    def __init__(
+        self,
+        reprojection_threshold: float = 5.0,
+        low_confidence_threshold: float = 0.5,
+    ) -> None:
         self.reprojection_threshold = reprojection_threshold
+        self.low_confidence_threshold = low_confidence_threshold
         self._project: ProjectManager | None = None
+        self._issue_identities: set[tuple[object, ...]] = set()
 
     def analyze(self, project: ProjectManager) -> QualityReport:
         self._project = project
+        self._issue_identities = set()
         issues: list[QualityIssue] = []
         inputs: dict[str, object] = {}
 
@@ -59,7 +67,10 @@ class QualityAuditService:
             if pose_3d_path.is_file() or not trc_paths
             else None
         )
-        pose_2d, keypoint_indices, detection_count = self._load_pose_2d(project.root / "pose", issues)
+        pose_2d, keypoint_indices, detection_count, pose_2d_metrics = self._load_pose_2d(
+            project.root / "pose",
+            issues,
+        )
 
         inputs["calibration"] = self._input_summary(calibration)
         inputs["synchronization"] = (
@@ -93,6 +104,11 @@ class QualityAuditService:
             "2d_detection_people_count": detection_count,
             "associated_people_count": associated_people,
             "track_segment_count": track_segments,
+            "2d_frame_count": pose_2d_metrics["frame_count"],
+            "2d_total_keypoints": pose_2d_metrics["total_keypoints"],
+            "2d_low_confidence_points": pose_2d_metrics["low_confidence_points"],
+            "2d_missing_keypoints": pose_2d_metrics["missing_keypoints"],
+            "2d_low_confidence_threshold": self.low_confidence_threshold,
         }
 
         total = 0
@@ -325,7 +341,13 @@ class QualityAuditService:
         self,
         directory: Path,
         issues: list[QualityIssue],
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, int], int]:
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, int], int, dict[str, int]]:
+        quality_metrics = {
+            "frame_count": 0,
+            "total_keypoints": 0,
+            "low_confidence_points": 0,
+            "missing_keypoints": 0,
+        }
         if not directory.is_dir():
             self._add_issue(
                 issues,
@@ -334,10 +356,11 @@ class QualityAuditService:
                 message="missing quality input layer: pose",
                 evidence={"layer": "pose", "path": str(directory)},
             )
-            return {}, {}, 0
+            return {}, {}, 0, quality_metrics
         payloads: dict[str, dict[str, Any]] = {}
         keypoint_indices: dict[str, int] = {}
         detections: set[tuple[str, int, int]] = set()
+        audited_frames: set[tuple[str, int]] = set()
         paths = sorted(directory.glob("*.json"))
         paths.extend(sorted(directory.glob("*_json/*.json")))
         for path in paths:
@@ -371,20 +394,195 @@ class QualityAuditService:
                 frame = frame_record.get("frame")
                 if not isinstance(frame, int):
                     continue
+                audited_frames.add((camera, frame))
                 for person_record in self._records(frame_record.get("people")):
                     raw_index = person_record.get("raw_person_index")
                     if isinstance(raw_index, int) and raw_index >= 0:
                         detections.add((camera, frame, raw_index))
+                self._audit_legacy_pose_frame(
+                    camera,
+                    frame,
+                    value,
+                    frame_record,
+                    path,
+                    issues,
+                    quality_metrics,
+                )
             if is_pose2sim_frame:
                 match = re.search(r"(\d+)$", path.stem)
                 if match is None:
                     continue
                 frame = int(match.group(1))
-                for raw_index, person_record in enumerate(self._records(value.get("people"))):
+                people = self._records(value.get("people"))
+                audited_frames.add((camera, frame))
+                for raw_index, person_record in enumerate(people):
                     values = person_record.get("pose_keypoints_2d")
                     if isinstance(values, list) and values:
                         detections.add((camera, frame, raw_index))
-        return payloads, keypoint_indices, len(detections)
+                self._audit_pose2sim_frame(
+                    camera,
+                    frame,
+                    people,
+                    path,
+                    issues,
+                    quality_metrics,
+                )
+        quality_metrics["frame_count"] = len(audited_frames)
+        return payloads, keypoint_indices, len(detections), quality_metrics
+
+    def _audit_legacy_pose_frame(
+        self,
+        camera: str,
+        frame: int,
+        payload: dict[str, Any],
+        frame_record: dict[str, Any],
+        path: Path,
+        issues: list[QualityIssue],
+        metrics: dict[str, int],
+    ) -> None:
+        model_name = payload.get("model_name")
+        model = model_name if isinstance(model_name, str) and model_name.strip() else "unknown"
+        declared_names = {
+            name: index
+            for index, name in enumerate(payload.get("keypoint_names", []))
+            if isinstance(name, str) and name.strip()
+        }
+        for ordinal, person_record in enumerate(self._records(frame_record.get("people"))):
+            raw_index = person_record.get("raw_person_index", ordinal)
+            if not isinstance(raw_index, int) or isinstance(raw_index, bool) or raw_index < 0:
+                raw_index = ordinal
+            person = self._pose_person_address(person_record, raw_index)
+            for keypoint_name, fallback_index, point in self._keypoints(person_record):
+                source_index = declared_names.get(keypoint_name, fallback_index)
+                keypoint = KeypointAddress(model, keypoint_name, source_index)
+                self._audit_2d_keypoint(
+                    camera,
+                    frame,
+                    person,
+                    keypoint,
+                    point.get("x"),
+                    point.get("y"),
+                    point.get("confidence"),
+                    path,
+                    issues,
+                    metrics,
+                )
+
+    def _audit_pose2sim_frame(
+        self,
+        camera: str,
+        frame: int,
+        people: list[dict[str, Any]],
+        path: Path,
+        issues: list[QualityIssue],
+        metrics: dict[str, int],
+    ) -> None:
+        for raw_index, person_record in enumerate(people):
+            values = person_record.get("pose_keypoints_2d")
+            if not isinstance(values, list) or len(values) % 3:
+                self._add_issue(
+                    issues,
+                    kind="input_invalid",
+                    severity="blocking",
+                    message=f"二维 pose 关节点数组格式无效：{path.name}",
+                    evidence={"layer": "pose", "path": str(path)},
+                )
+                continue
+            model_name, names = inferred_keypoint_schema(len(values) // 3)
+            person = self._pose_person_address(person_record, raw_index)
+            for index, keypoint_name in enumerate(names):
+                offset = index * 3
+                self._audit_2d_keypoint(
+                    camera,
+                    frame,
+                    person,
+                    KeypointAddress(model_name, keypoint_name, index),
+                    values[offset],
+                    values[offset + 1],
+                    values[offset + 2],
+                    path,
+                    issues,
+                    metrics,
+                )
+
+    def _audit_2d_keypoint(
+        self,
+        camera: str,
+        frame: int,
+        person: PersonAddress,
+        keypoint: KeypointAddress,
+        x: object,
+        y: object,
+        confidence: object,
+        path: Path,
+        issues: list[QualityIssue],
+        metrics: dict[str, int],
+    ) -> None:
+        metrics["total_keypoints"] += 1
+        target = FrameAddress(camera, "raw", frame)
+        base_evidence = {
+            "camera": camera,
+            "raw_frame": frame,
+            "raw_person_index": person.raw_person_index,
+            "keypoint": keypoint.keypoint_name,
+            "path": str(path),
+        }
+        if not (
+            self._finite_number(x)
+            and self._finite_number(y)
+            and self._finite_number(confidence)
+        ):
+            metrics["missing_keypoints"] += 1
+            self._add_issue(
+                issues,
+                kind="missing",
+                severity="error",
+                target=target,
+                person=person,
+                keypoint=keypoint,
+                message=(
+                    f"相机 {camera} 原始帧 {frame} 人物 {(person.raw_person_index or 0) + 1} "
+                    f"的 {keypoint.keypoint_name} 缺少有效二维坐标或置信度"
+                ),
+                evidence=base_evidence,
+            )
+            return
+        confidence_value = float(confidence)
+        if confidence_value >= self.low_confidence_threshold:
+            return
+        metrics["low_confidence_points"] += 1
+        self._add_issue(
+            issues,
+            kind="low_confidence",
+            severity="error" if confidence_value <= 0 else "warning",
+            target=target,
+            person=person,
+            keypoint=keypoint,
+            message=(
+                f"相机 {camera} 原始帧 {frame} 人物 {(person.raw_person_index or 0) + 1} "
+                f"的 {keypoint.keypoint_name} 置信度 {confidence_value:.3f} "
+                f"低于阈值 {self.low_confidence_threshold:.3f}"
+            ),
+            evidence={
+                **base_evidence,
+                "confidence": confidence_value,
+                "threshold": self.low_confidence_threshold,
+            },
+        )
+
+    @staticmethod
+    def _pose_person_address(value: dict[str, Any], raw_index: int) -> PersonAddress:
+        project_person_id = value.get("project_person_id")
+        return PersonAddress(
+            project_person_id
+            if isinstance(project_person_id, str) and project_person_id.strip()
+            else f"raw-{raw_index}",
+            value.get("track_segment_id")
+            if isinstance(value.get("track_segment_id"), str)
+            and value["track_segment_id"].strip()
+            else None,
+            raw_index,
+        )
 
     @staticmethod
     def _association_counts(value: dict[str, Any] | None) -> tuple[int, int]:
@@ -452,8 +650,8 @@ class QualityAuditService:
             return []
         return [item for item in value if isinstance(item, str) and item]
 
-    @staticmethod
     def _add_issue(
+        self,
         issues: list[QualityIssue],
         *,
         kind: str,
@@ -473,20 +671,9 @@ class QualityAuditService:
             keypoint.keypoint_name if keypoint else None,
             message if target is None and person is None and keypoint is None else None,
         )
-        for existing in issues:
-            existing_identity = (
-                existing.kind,
-                existing.target.camera if existing.target else None,
-                existing.target.timeline if existing.target else None,
-                existing.target.frame if existing.target else None,
-                existing.person.project_person_id if existing.person else None,
-                existing.keypoint.keypoint_name if existing.keypoint else None,
-                existing.message
-                if existing.target is None and existing.person is None and existing.keypoint is None
-                else None,
-            )
-            if existing_identity == identity:
-                return
+        if identity in self._issue_identities:
+            return
+        self._issue_identities.add(identity)
         issues.append(
             QualityIssue(
                 issue_id=f"issue-{len(issues) + 1:04d}",
