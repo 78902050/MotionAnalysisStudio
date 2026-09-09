@@ -925,8 +925,12 @@ class MainWindow(QMainWindow):
         sizes = self.settings.value("workspace_splitter_sizes")
         if isinstance(sizes, list) and sizes:
             self.workspace_splitter.setSizes([int(size) for size in sizes])
-        if self.settings.value("navigation_collapsed", False, type=bool):
-            self._apply_navigation_collapsed(True)
+        # A persisted 48px navigation rail is easy to mistake for a missing
+        # feature area, especially after a display or theme change. Always
+        # restore the full navigation when the application starts; users can
+        # still collapse it for the current session with Ctrl+Shift+L.
+        self._apply_navigation_collapsed(False)
+        self.settings.setValue("navigation_collapsed", False)
 
     def closeEvent(self, event) -> None:
         if not self.request_close_with_unsaved_guard():

@@ -4,7 +4,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QScrollArea, QSplitter
 
 from app.gui.main_window import MainWindow
@@ -44,6 +44,21 @@ class GuiLayoutTests(unittest.TestCase):
             self.assertTrue(item.toolTip())
             self.assertEqual(item.text(), "")
         window.close()
+
+    def test_saved_collapsed_navigation_is_expanded_on_next_startup(self) -> None:
+        settings = QSettings("MotionAnalysisStudio", "MotionAnalysisStudio")
+        previous = settings.value("navigation_collapsed")
+        settings.setValue("navigation_collapsed", True)
+        window = MainWindow()
+        try:
+            self.assertEqual(window.navigation.maximumWidth(), 280)
+            self.assertEqual(window.navigation_list.item(0).text(), "项目")
+        finally:
+            window.close()
+            if previous is None:
+                settings.remove("navigation_collapsed")
+            else:
+                settings.setValue("navigation_collapsed", previous)
 
     def test_small_window_pages_remain_accessible_through_scrollbars(self) -> None:
         window = MainWindow()
