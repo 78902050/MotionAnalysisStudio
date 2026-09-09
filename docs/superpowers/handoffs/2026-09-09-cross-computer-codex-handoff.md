@@ -10,6 +10,7 @@
 
 - 仓库：`https://github.com/78902050/MotionAnalysisStudio`
 - 工作分支：`codex/phase-9`
+- 本轮功能基线提交：`c76db23`
 - Python：3.12
 - 核心外部版本：Pose2Sim 0.10.49、Caliscope 0.11.6
 - 完整回归：383 项通过。

@@ -444,7 +444,7 @@ Record commands, exit codes, sample source, temporary destination, generated pos
 limitations. Run `git diff --check` and `git status --short`; verify the four pre-existing untracked documents
 remain untouched.
 
-- [ ] **Step 7: Commit and push the completed stage**
+- [x] **Step 7: Commit and push the completed stage**
 
 After fresh verification, stage only files from this plan, commit with a concise non-generated message, and
 push the current `codex/phase-9` branch to the configured MotionAnalysisStudio remote, following the user's
