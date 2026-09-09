@@ -227,6 +227,7 @@ class MainWindow(QMainWindow):
         quality_2d_page = self._pages["quality_2d"]
         assert isinstance(quality_2d_page, Quality2DPage)
         quality_2d_page.scan_requested.connect(self._start_quality_scan)
+        quality_2d_page.issues_filtered.connect(correction_page.set_quality_issues)
         quality_3d_page = self._pages["quality_3d"]
         assert isinstance(quality_3d_page, Quality3DPage)
         quality_3d_page.playback_requested.connect(self._open_playback_target)
@@ -446,7 +447,6 @@ class MainWindow(QMainWindow):
             quality_page = self._pages.get(page_id)
             if isinstance(quality_page, (Quality2DPage, Quality3DPage)):
                 quality_page.set_project(project)
-        self._refresh_correction_issue_queue(project)
         association_page = self._pages.get("association")
         if isinstance(association_page, AssociationPage):
             association_page.set_project(project)
@@ -611,24 +611,11 @@ class MainWindow(QMainWindow):
                 page = self._pages.get(page_id)
                 if isinstance(page, (Quality2DPage, Quality3DPage)):
                     page.set_project(project)
-            self._refresh_correction_issue_queue(project)
             self.statusBar().showMessage("二维质量检查已完成")
         elif result.status == "failed":
             self.statusBar().showMessage(f"二维质量检查失败：{result.error}")
         elif result.status == "cancelled":
             self.statusBar().showMessage("二维质量检查已取消")
-
-    def _refresh_correction_issue_queue(self, project: ProjectManager) -> None:
-        correction_page = self._pages.get("correction_2d")
-        if not isinstance(correction_page, CorrectionPage):
-            return
-        try:
-            report = self.quality_correction_service.load_report() if self.quality_correction_service else None
-        except (OSError, ValueError, KeyError):
-            report = None
-        correction_page.set_quality_issues(
-            Quality2DPage.issues_for_report(report) if report is not None else ()
-        )
 
     def _prepare_correction_open(self):
         service = self.quality_correction_service

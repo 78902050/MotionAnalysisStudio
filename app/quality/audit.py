@@ -72,7 +72,13 @@ class QualityAuditService:
             if pose_3d_path.is_file() or not trc_paths
             else None
         )
-        pose_2d, keypoint_indices, detection_count, pose_2d_metrics = self._load_pose_2d(
+        (
+            pose_2d,
+            keypoint_indices,
+            detection_count,
+            pose_2d_metrics,
+            raw_person_indices,
+        ) = self._load_pose_2d(
             project.root / "pose",
             issues,
             progress_callback=progress_callback,
@@ -84,7 +90,10 @@ class QualityAuditService:
             if not synchronized_inventory
             else self._pose_inventory_summary(synchronized_inventory, "Pose2Sim pose-sync")
         )
-        inputs["pose_2d"] = sorted(pose_2d)
+        inputs["pose_2d"] = {
+            "cameras": sorted(pose_2d),
+            "raw_person_indices": list(raw_person_indices),
+        }
         inputs["pose_3d"] = (
             self._input_summary(pose_3d)
             if not trc_paths
@@ -349,7 +358,13 @@ class QualityAuditService:
         issues: list[QualityIssue],
         *,
         progress_callback: Callable[[int, int], None] | None = None,
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, int], int, dict[str, int]]:
+    ) -> tuple[
+        dict[str, dict[str, Any]],
+        dict[str, int],
+        int,
+        dict[str, int],
+        tuple[int, ...],
+    ]:
         quality_metrics = {
             "frame_count": 0,
             "total_keypoints": 0,
@@ -364,7 +379,7 @@ class QualityAuditService:
                 message="missing quality input layer: pose",
                 evidence={"layer": "pose", "path": str(directory)},
             )
-            return {}, {}, 0, quality_metrics
+            return {}, {}, 0, quality_metrics, ()
         payloads: dict[str, dict[str, Any]] = {}
         keypoint_indices: dict[str, int] = {}
         detections: set[tuple[str, int, int]] = set()
@@ -446,7 +461,16 @@ class QualityAuditService:
             if progress_callback is not None:
                 progress_callback(completed, len(paths))
         quality_metrics["frame_count"] = len(audited_frames)
-        return payloads, keypoint_indices, len(detections), quality_metrics
+        raw_person_indices = tuple(
+            sorted({raw_index for _camera, _frame, raw_index in detections})
+        )
+        return (
+            payloads,
+            keypoint_indices,
+            len(detections),
+            quality_metrics,
+            raw_person_indices,
+        )
 
     def _audit_legacy_pose_frame(
         self,

@@ -175,6 +175,10 @@ class QualityAuditTests(unittest.TestCase):
             self.assertEqual(issue.evidence["confidence"], 0.18)
             self.assertEqual(issue.evidence["threshold"], 0.5)
             self.assertEqual(report.metrics()["2d_low_confidence_points"], 1)
+            self.assertEqual(
+                report.inputs["pose_2d"]["raw_person_indices"],
+                [0],
+            )
             self.assertEqual(progress[0], (0, 1))
             self.assertEqual(progress[-1], (1, 1))
 

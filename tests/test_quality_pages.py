@@ -241,9 +241,20 @@ class QualityPageTests(unittest.TestCase):
             ),
         )
         page = Quality2DPage()
-        page.set_report(_report(*issues), {})
+        page.set_report(
+            QualityReport(
+                "quality-filter-report",
+                "2026-09-05T10:00:00+00:00",
+                {},
+                issues,
+                {"pose_2d": {"raw_person_indices": [0, 1]}},
+            ),
+            {},
+        )
 
         page.camera_filter.setCurrentIndex(page.camera_filter.findData("camA"))
+        self.assertGreaterEqual(page.person_filter.findData(1), 0)
+        page.person_filter.setCurrentIndex(page.person_filter.findData(0))
         page.frame_start_filter.setValue(20)
         page.frame_end_filter.setValue(30)
         page.keypoint_filter.setCurrentIndex(page.keypoint_filter.findData("RWrist"))
@@ -461,11 +472,27 @@ class QualityPageTests(unittest.TestCase):
                 "左手腕置信度偏低",
                 {"confidence": 0.2, "threshold": 0.5},
             )
-            QualityReportStore(project).save(_report(issue))
+            extra_issue = QualityIssue(
+                "low-confidence-other-camera",
+                "low_confidence",
+                "warning",
+                FrameAddress("camB", "raw", 13),
+                PersonAddress("raw-0", raw_person_index=0),
+                KeypointAddress("coco17", "left_wrist", 0),
+                "另一个相机的问题",
+                {"confidence": 0.3, "threshold": 0.5},
+            )
+            QualityReportStore(project).save(_report(issue, extra_issue))
             window = MainWindow()
             try:
                 self.assertTrue(window.open_project(project))
                 correction = window._pages["correction_2d"]
+                self.assertEqual(correction.issue_list.count(), 2)
+                quality_page = window._pages["quality_2d"]
+                quality_page.camera_filter.setCurrentIndex(
+                    quality_page.camera_filter.findData("camA")
+                )
+                self.application.processEvents()
                 self.assertEqual(correction.issue_list.count(), 1)
                 queue_item = correction.issue_list.item(0)
                 self.assertIn("camA · 原始帧 12 · 人物 1 · left_wrist", queue_item.text())

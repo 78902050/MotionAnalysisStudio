@@ -302,6 +302,7 @@ class _QualityPageBase(QWidget):
 
 class Quality2DPage(_QualityPageBase):
     scan_requested = Signal()
+    issues_filtered = Signal(object)
     _TWO_DIMENSIONAL_KINDS = frozenset(
         {"low_confidence", "missing", "reprojection", "mapping_missing"}
     )
@@ -325,23 +326,28 @@ class Quality2DPage(_QualityPageBase):
         self.camera_filter.setObjectName("quality_2d_camera_filter")
         self.camera_filter.addItem("全部相机", None)
         filters.addWidget(self.camera_filter, 0, 1)
-        filters.addWidget(QLabel("关键点"), 0, 2)
+        filters.addWidget(QLabel("人物"), 0, 2)
+        self.person_filter = QComboBox()
+        self.person_filter.setObjectName("quality_2d_person_filter")
+        self.person_filter.addItem("全部人物", None)
+        filters.addWidget(self.person_filter, 0, 3)
+        filters.addWidget(QLabel("关键点"), 1, 0)
         self.keypoint_filter = QComboBox()
         self.keypoint_filter.setObjectName("quality_2d_keypoint_filter")
         self.keypoint_filter.addItem("全部关键点", None)
-        filters.addWidget(self.keypoint_filter, 0, 3)
-        filters.addWidget(QLabel("帧范围"), 1, 0)
+        filters.addWidget(self.keypoint_filter, 1, 1)
+        filters.addWidget(QLabel("帧范围"), 1, 2)
         self.frame_start_filter = QSpinBox()
         self.frame_start_filter.setObjectName("quality_2d_frame_start_filter")
         self.frame_start_filter.setRange(0, 2_147_483_647)
         self.frame_start_filter.setValue(0)
-        filters.addWidget(self.frame_start_filter, 1, 1)
-        filters.addWidget(QLabel("至"), 1, 2)
+        filters.addWidget(self.frame_start_filter, 1, 3)
+        filters.addWidget(QLabel("至"), 1, 4)
         self.frame_end_filter = QSpinBox()
         self.frame_end_filter.setObjectName("quality_2d_frame_end_filter")
         self.frame_end_filter.setRange(0, 2_147_483_647)
         self.frame_end_filter.setValue(2_147_483_647)
-        filters.addWidget(self.frame_end_filter, 1, 3)
+        filters.addWidget(self.frame_end_filter, 1, 5)
         filters.addWidget(QLabel("置信度"), 2, 0)
         self.confidence_operator = QComboBox()
         self.confidence_operator.setObjectName("quality_2d_confidence_operator")
@@ -375,6 +381,7 @@ class Quality2DPage(_QualityPageBase):
         self.scan_progress.setVisible(False)
         self._content_layout.insertWidget(4, self.scan_progress)
         self.camera_filter.currentIndexChanged.connect(self._apply_filters)
+        self.person_filter.currentIndexChanged.connect(self._apply_filters)
         self.keypoint_filter.currentIndexChanged.connect(self._apply_filters)
         self.frame_start_filter.valueChanged.connect(self._apply_filters)
         self.frame_end_filter.valueChanged.connect(self._apply_filters)
@@ -423,6 +430,7 @@ class Quality2DPage(_QualityPageBase):
         manifest: Mapping[str, object] | None = None,
     ) -> None:
         two_dimensional = self.issues_for_report(report)
+        self._two_dimensional_issues = two_dimensional
         super().set_report(
             QualityReport(
                 report.report_id,
@@ -441,6 +449,7 @@ class Quality2DPage(_QualityPageBase):
         if self.viewer_model is None:
             return
         previous_camera = self.camera_filter.currentData()
+        previous_person = self.person_filter.currentData()
         previous_keypoint = self.keypoint_filter.currentData()
         cameras = sorted(
             {
@@ -458,51 +467,129 @@ class Quality2DPage(_QualityPageBase):
             },
             key=str.casefold,
         )
-        for combo, label, values, selected in (
-            (self.camera_filter, "全部相机", cameras, previous_camera),
-            (self.keypoint_filter, "全部关键点", keypoints, previous_keypoint),
-        ):
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItem(label, None)
-            for value in values:
-                combo.addItem(value, value)
-            selected_index = combo.findData(selected)
-            combo.setCurrentIndex(selected_index if selected_index >= 0 else 0)
-            combo.blockSignals(False)
+        self._replace_filter_options(
+            self.camera_filter,
+            "全部相机",
+            ((camera, camera) for camera in cameras),
+            previous_camera,
+        )
+        self._replace_filter_options(
+            self.person_filter,
+            "全部人物",
+            (
+                (f"人物 {raw_index + 1}", raw_index)
+                for raw_index in self._actual_person_indices()
+            ),
+            previous_person,
+        )
+        self._replace_filter_options(
+            self.keypoint_filter,
+            "全部关键点",
+            ((keypoint, keypoint) for keypoint in keypoints),
+            previous_keypoint,
+        )
+
+    @staticmethod
+    def _replace_filter_options(
+        combo: QComboBox,
+        label: str,
+        values,
+        selected: object,
+    ) -> None:
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(label, None)
+        for display, value in values:
+            combo.addItem(display, value)
+        selected_index = combo.findData(selected)
+        combo.setCurrentIndex(selected_index if selected_index >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _actual_person_indices(self) -> tuple[int, ...]:
+        if self.viewer_model is None:
+            return ()
+        pose_input = self.viewer_model.report.inputs.get("pose_2d")
+        if isinstance(pose_input, dict):
+            values = pose_input.get("raw_person_indices")
+            if isinstance(values, list):
+                indices = {
+                    value
+                    for value in values
+                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                }
+                if indices:
+                    return tuple(sorted(indices))
+        return tuple(
+            sorted(
+                {
+                    row.target.person.raw_person_index
+                    for row in self.viewer_model.issues
+                    if row.target is not None
+                    and row.target.person.raw_person_index is not None
+                }
+            )
+        )
 
     def _issues_for_display(self):
         issues = super()._issues_for_display()
         if not hasattr(self, "camera_filter"):
             return issues
+        return tuple(
+            row
+            for row in issues
+            if self._matches_filters(
+                row.target.address if row.target is not None else None,
+                row.target.person if row.target is not None else None,
+                row.target.keypoint if row.target is not None else None,
+                row.evidence,
+            )
+        )
+
+    def _matches_filters(
+        self,
+        address,
+        person,
+        keypoint_address,
+        evidence: Mapping[str, object],
+    ) -> bool:
         camera = self.camera_filter.currentData()
+        raw_person_index = self.person_filter.currentData()
         keypoint = self.keypoint_filter.currentData()
         first_frame = self.frame_start_filter.value()
         last_frame = self.frame_end_filter.value()
         confidence_mode = self.confidence_operator.currentData()
         threshold = self.confidence_threshold.value()
-
-        def matches(row) -> bool:
-            target = row.target
-            if camera is not None and (target is None or target.address.camera != camera):
+        if camera is not None and (address is None or address.camera != camera):
+            return False
+        if raw_person_index is not None and (
+            person is None or person.raw_person_index != raw_person_index
+        ):
+            return False
+        if keypoint is not None and (
+            keypoint_address is None or keypoint_address.keypoint_name != keypoint
+        ):
+            return False
+        if first_frame > 0 or last_frame < 2_147_483_647:
+            if address is None or not first_frame <= address.frame <= last_frame:
                 return False
-            if keypoint is not None and (
-                target is None or target.keypoint.keypoint_name != keypoint
-            ):
-                return False
-            if first_frame > 0 or last_frame < 2_147_483_647:
-                if target is None or not first_frame <= target.address.frame <= last_frame:
-                    return False
-            confidence = row.evidence.get("confidence")
-            if confidence_mode == "at_most":
-                if not _is_number(confidence) or float(confidence) > threshold:
-                    return False
-            elif confidence_mode == "at_least":
-                if not _is_number(confidence) or float(confidence) < threshold:
-                    return False
-            return True
+        confidence = evidence.get("confidence")
+        if confidence_mode == "at_most":
+            return _is_number(confidence) and float(confidence) <= threshold
+        if confidence_mode == "at_least":
+            return _is_number(confidence) and float(confidence) >= threshold
+        return True
 
-        return tuple(row for row in issues if matches(row))
+    def _filtered_report_issues(self) -> tuple[QualityIssue, ...]:
+        return tuple(
+            issue
+            for issue in getattr(self, "_two_dimensional_issues", ())
+            if self._matches_filters(
+                issue.target,
+                issue.person,
+                issue.keypoint,
+                issue.evidence,
+            )
+        )
 
     def _apply_filters(self, *_ignored: object) -> None:
         if self.viewer_model is None or not hasattr(self, "camera_filter"):
@@ -513,10 +600,12 @@ class Quality2DPage(_QualityPageBase):
         self.location_status.setText(
             f"筛选后显示 {shown}/{len(self.viewer_model.issues)} 个问题；点击可定位问题进入二维修正。"
         )
+        self.issues_filtered.emit(self._filtered_report_issues())
 
     def _reset_filters(self) -> None:
         controls = (
             self.camera_filter,
+            self.person_filter,
             self.keypoint_filter,
             self.frame_start_filter,
             self.frame_end_filter,
@@ -526,6 +615,7 @@ class Quality2DPage(_QualityPageBase):
         for control in controls:
             control.blockSignals(True)
         self.camera_filter.setCurrentIndex(0)
+        self.person_filter.setCurrentIndex(0)
         self.keypoint_filter.setCurrentIndex(0)
         self.frame_start_filter.setValue(0)
         self.frame_end_filter.setValue(2_147_483_647)
