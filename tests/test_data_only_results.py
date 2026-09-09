@@ -54,7 +54,7 @@ class DataOnlyResultTests(unittest.TestCase):
         self.assertFalse(canvas._image_rect().isEmpty())
         self.assertEqual(canvas.data_extent, (3840, 2160))
 
-    def test_imported_result_without_report_starts_background_quality_scan(self) -> None:
+    def test_imported_result_waits_for_explicit_2d_quality_scan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             trial = Path(directory) / "已处理试次"
             shutil.copytree(FIXTURE_ROOT, trial / "pose")
@@ -67,6 +67,11 @@ class DataOnlyResultTests(unittest.TestCase):
             window = MainWindow()
 
             self.assertTrue(window.open_project(project, dirty_decision="discard"))
+            self.assertIsNone(window.initial_quality_handle)
+            self.assertFalse(report_path.exists())
+            self.assertTrue(window.navigate("quality_2d"))
+            quality_page = window._pages["quality_2d"]
+            quality_page.scan_button.click()
             handle = window.initial_quality_handle
             self.assertIsNotNone(handle)
             assert handle is not None

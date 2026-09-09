@@ -4,7 +4,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from app.adapters.pose2sim.pose2d_repository import inferred_keypoint_schema
@@ -29,7 +29,12 @@ class QualityAuditService:
         self._project: ProjectManager | None = None
         self._issue_identities: set[tuple[object, ...]] = set()
 
-    def analyze(self, project: ProjectManager) -> QualityReport:
+    def analyze(
+        self,
+        project: ProjectManager,
+        *,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> QualityReport:
         self._project = project
         self._issue_identities = set()
         issues: list[QualityIssue] = []
@@ -70,6 +75,7 @@ class QualityAuditService:
         pose_2d, keypoint_indices, detection_count, pose_2d_metrics = self._load_pose_2d(
             project.root / "pose",
             issues,
+            progress_callback=progress_callback,
         )
 
         inputs["calibration"] = self._input_summary(calibration)
@@ -341,6 +347,8 @@ class QualityAuditService:
         self,
         directory: Path,
         issues: list[QualityIssue],
+        *,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], dict[str, int], int, dict[str, int]]:
         quality_metrics = {
             "frame_count": 0,
@@ -363,7 +371,9 @@ class QualityAuditService:
         audited_frames: set[tuple[str, int]] = set()
         paths = sorted(directory.glob("*.json"))
         paths.extend(sorted(directory.glob("*_json/*.json")))
-        for path in paths:
+        if progress_callback is not None:
+            progress_callback(0, len(paths))
+        for completed, path in enumerate(paths, start=1):
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -374,8 +384,12 @@ class QualityAuditService:
                     message=f"cannot read 2D pose file: {path.name}",
                     evidence={"layer": "pose", "path": str(path), "reason": str(exc)},
                 )
+                if progress_callback is not None:
+                    progress_callback(completed, len(paths))
                 continue
             if not isinstance(value, dict):
+                if progress_callback is not None:
+                    progress_callback(completed, len(paths))
                 continue
             is_pose2sim_frame = path.parent != directory and path.parent.name.endswith("_json")
             camera = str(
@@ -411,6 +425,8 @@ class QualityAuditService:
             if is_pose2sim_frame:
                 match = re.search(r"(\d+)$", path.stem)
                 if match is None:
+                    if progress_callback is not None:
+                        progress_callback(completed, len(paths))
                     continue
                 frame = int(match.group(1))
                 people = self._records(value.get("people"))
@@ -427,6 +443,8 @@ class QualityAuditService:
                     issues,
                     quality_metrics,
                 )
+            if progress_callback is not None:
+                progress_callback(completed, len(paths))
         quality_metrics["frame_count"] = len(audited_frames)
         return payloads, keypoint_indices, len(detections), quality_metrics
 

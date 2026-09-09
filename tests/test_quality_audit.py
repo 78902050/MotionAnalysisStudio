@@ -154,7 +154,11 @@ class QualityAuditTests(unittest.TestCase):
                 {"version": 1.3, "people": [{"pose_keypoints_2d": values}]},
             )
 
-            report = QualityAuditService(low_confidence_threshold=0.5).analyze(project)
+            progress: list[tuple[int, int]] = []
+            report = QualityAuditService(low_confidence_threshold=0.5).analyze(
+                project,
+                progress_callback=lambda completed, total: progress.append((completed, total)),
+            )
 
             low_confidence = [
                 issue for issue in report.issues() if issue.kind == "low_confidence"
@@ -171,6 +175,8 @@ class QualityAuditTests(unittest.TestCase):
             self.assertEqual(issue.evidence["confidence"], 0.18)
             self.assertEqual(issue.evidence["threshold"], 0.5)
             self.assertEqual(report.metrics()["2d_low_confidence_points"], 1)
+            self.assertEqual(progress[0], (0, 1))
+            self.assertEqual(progress[-1], (1, 1))
 
     def test_save_writes_current_report_and_versioned_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

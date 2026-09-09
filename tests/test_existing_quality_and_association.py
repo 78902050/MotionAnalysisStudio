@@ -96,7 +96,7 @@ class ExistingQualityAndAssociationTests(unittest.TestCase):
             self.assertIn("3", page.status.text())
             page.close()
 
-    def test_old_quality_report_without_trc_metrics_is_refreshed_in_background(self) -> None:
+    def test_opening_old_quality_report_does_not_start_background_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = ProjectManager.create(Path(directory) / "旧质检", "旧质检")
             project.manifest["imported_artifacts"] = {"pose_2d_files": 1}
@@ -115,12 +115,12 @@ class ExistingQualityAndAssociationTests(unittest.TestCase):
             try:
                 self.assertTrue(window.open_project(project))
 
-                self.assertIsNotNone(window.initial_quality_handle)
-                self.assertIn("正在后台", window.statusBar().currentMessage())
+                self.assertIsNone(window.initial_quality_handle)
+                self.assertIn("已打开项目", window.statusBar().currentMessage())
             finally:
                 window.close()
 
-    def test_old_quality_report_without_2d_confidence_metrics_is_refreshed_in_background(self) -> None:
+    def test_opening_old_2d_quality_report_does_not_start_background_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = ProjectManager.create(Path(directory) / "旧二维质检", "旧二维质检")
             project.manifest["imported_artifacts"] = {"pose_2d_files": 1}
@@ -135,8 +135,8 @@ class ExistingQualityAndAssociationTests(unittest.TestCase):
             try:
                 self.assertTrue(window.open_project(project))
 
-                self.assertIsNotNone(window.initial_quality_handle)
-                self.assertIn("正在后台", window.statusBar().currentMessage())
+                self.assertIsNone(window.initial_quality_handle)
+                self.assertIn("已打开项目", window.statusBar().currentMessage())
             finally:
                 window.close()
 

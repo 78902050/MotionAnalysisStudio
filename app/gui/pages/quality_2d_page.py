@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
+    QPushButton,
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
@@ -44,6 +46,7 @@ _DISPOSITION_TEXT = {
 
 class _QualityPageBase(QWidget):
     target_requested = Signal(object)
+    _ISSUES_PER_PAGE = 200
 
     def __init__(
         self,
@@ -55,6 +58,7 @@ class _QualityPageBase(QWidget):
         super().__init__(parent)
         self.project: ProjectManager | None = None
         self.viewer_model: QualityViewerModel | None = None
+        self._issue_page = 0
         self._build_ui(title, description)
         if project is not None:
             self.set_project(project)
@@ -66,6 +70,7 @@ class _QualityPageBase(QWidget):
         layout = QVBoxLayout(body)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
+        self._content_layout = layout
 
         header = QHBoxLayout()
         heading = QLabel(title)
@@ -126,6 +131,21 @@ class _QualityPageBase(QWidget):
         self.issue_table.cellClicked.connect(self._request_row_target)
         layout.addWidget(self.issue_table, 1)
 
+        pagination = QHBoxLayout()
+        self.previous_issue_page_button = QPushButton("上一页")
+        self.previous_issue_page_button.setObjectName("quality_previous_issue_page")
+        self.next_issue_page_button = QPushButton("下一页")
+        self.next_issue_page_button.setObjectName("quality_next_issue_page")
+        self.issue_page_label = QLabel("第 0/0 页")
+        self.issue_page_label.setObjectName("quality_issue_page")
+        pagination.addStretch(1)
+        pagination.addWidget(self.previous_issue_page_button)
+        pagination.addWidget(self.issue_page_label)
+        pagination.addWidget(self.next_issue_page_button)
+        self.previous_issue_page_button.clicked.connect(lambda: self._change_issue_page(-1))
+        self.next_issue_page_button.clicked.connect(lambda: self._change_issue_page(1))
+        layout.addLayout(pagination)
+
         self.location_status = QLabel("点击问题可定位到二维修正；不可定位的问题会在此说明原因。")
         self.location_status.setObjectName("quality_location_status")
         self.location_status.setWordWrap(True)
@@ -175,6 +195,7 @@ class _QualityPageBase(QWidget):
         manifest: Mapping[str, object] | None = None,
     ) -> None:
         self.viewer_model = QualityViewerModel(report)
+        self._issue_page = 0
         comparison = QualityComparisonView.from_sources(report, manifest or {})
         self.report_version.setText(f"报告版本：{comparison.current_report_id}")
         self.before_metrics.setText(
@@ -188,12 +209,19 @@ class _QualityPageBase(QWidget):
         )
 
     def _fill_issues(self) -> None:
+        self.issue_table.setUpdatesEnabled(False)
         self.issue_table.setRowCount(0)
         if self.viewer_model is None:
+            self._update_issue_pagination(0)
+            self.issue_table.setUpdatesEnabled(True)
             return
-        for issue in self.viewer_model.issues:
-            row = self.issue_table.rowCount()
-            self.issue_table.insertRow(row)
+        total = len(self.viewer_model.issues)
+        page_count = max(1, (total + self._ISSUES_PER_PAGE - 1) // self._ISSUES_PER_PAGE)
+        self._issue_page = min(self._issue_page, page_count - 1)
+        start = self._issue_page * self._ISSUES_PER_PAGE
+        visible_issues = self.viewer_model.issues[start : start + self._ISSUES_PER_PAGE]
+        self.issue_table.setRowCount(len(visible_issues))
+        for row, issue in enumerate(visible_issues):
             location = issue.location_error or _target_text(issue.target)
             values = (
                 issue.issue_id,
@@ -210,6 +238,28 @@ class _QualityPageBase(QWidget):
                 if issue.location_error is not None:
                     item.setForeground(Qt.GlobalColor.gray)
                 self.issue_table.setItem(row, column, item)
+        self._update_issue_pagination(total)
+        self.issue_table.setUpdatesEnabled(True)
+
+    def _change_issue_page(self, offset: int) -> None:
+        if self.viewer_model is None:
+            return
+        total = len(self.viewer_model.issues)
+        page_count = max(1, (total + self._ISSUES_PER_PAGE - 1) // self._ISSUES_PER_PAGE)
+        requested = min(max(0, self._issue_page + offset), page_count - 1)
+        if requested == self._issue_page:
+            return
+        self._issue_page = requested
+        self._fill_issues()
+
+    def _update_issue_pagination(self, total: int) -> None:
+        page_count = (total + self._ISSUES_PER_PAGE - 1) // self._ISSUES_PER_PAGE if total else 0
+        current = self._issue_page + 1 if page_count else 0
+        self.issue_page_label.setText(f"第 {current}/{page_count} 页 · 共 {total} 项")
+        self.previous_issue_page_button.setEnabled(self._issue_page > 0)
+        self.next_issue_page_button.setEnabled(
+            page_count > 0 and self._issue_page < page_count - 1
+        )
 
     def _request_row_target(self, row: int, _column: int) -> None:
         if self.viewer_model is None:
@@ -230,7 +280,9 @@ class _QualityPageBase(QWidget):
 
     def _clear(self, reason: str) -> None:
         self.viewer_model = None
+        self._issue_page = 0
         self.issue_table.setRowCount(0)
+        self._update_issue_pagination(0)
         self.report_version.setText("报告版本：—")
         self.before_metrics.setText("暂无修改前快照")
         self.current_metrics.setText("暂无当前指标")
@@ -239,6 +291,8 @@ class _QualityPageBase(QWidget):
 
 
 class Quality2DPage(_QualityPageBase):
+    scan_requested = Signal()
+
     def __init__(
         self,
         project: ProjectManager | None = None,
@@ -246,9 +300,42 @@ class Quality2DPage(_QualityPageBase):
     ) -> None:
         super().__init__(
             "二维质量检查",
-            "逐帧检查 Pose2Sim 二维关节点的置信度。每项明确列出相机、原始帧、人物和关节点；点击后直接进入人工二维修正。默认低置信度阈值为 0.500。",
+            "点击“开始二维质检”后逐帧检查 Pose2Sim 二维关节点的置信度。每项明确列出相机、原始帧、人物和关节点；点击后直接进入人工二维修正。默认低置信度阈值为 0.500。",
             project,
             parent,
+        )
+        actions = QHBoxLayout()
+        self.scan_button = QPushButton("开始二维质检")
+        self.scan_button.setObjectName("quality_2d_scan_button")
+        self.scan_button.clicked.connect(self.scan_requested.emit)
+        actions.addWidget(self.scan_button)
+        actions.addStretch(1)
+        self._content_layout.insertLayout(2, actions)
+
+        self.scan_progress = QProgressBar()
+        self.scan_progress.setObjectName("quality_2d_scan_progress")
+        self.scan_progress.setTextVisible(True)
+        self.scan_progress.setVisible(False)
+        self._content_layout.insertWidget(3, self.scan_progress)
+
+    def set_scan_running(self, running: bool) -> None:
+        self.scan_button.setEnabled(not running)
+        self.scan_button.setText("正在检查…" if running else "开始二维质检")
+        self.scan_progress.setVisible(running)
+        if running:
+            self.scan_progress.setRange(0, 0)
+            self.scan_progress.setFormat("正在准备读取二维姿态文件…")
+
+    def set_scan_progress(self, completed: int, total: int) -> None:
+        if total <= 0:
+            self.scan_progress.setRange(0, 1)
+            self.scan_progress.setValue(1)
+            self.scan_progress.setFormat("未发现可读取的二维姿态文件")
+            return
+        self.scan_progress.setRange(0, total)
+        self.scan_progress.setValue(min(max(completed, 0), total))
+        self.scan_progress.setFormat(
+            f"正在读取 {completed}/{total} 个二维姿态文件（%p%）"
         )
 
     def set_report(

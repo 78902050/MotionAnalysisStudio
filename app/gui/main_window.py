@@ -1,6 +1,7 @@
 """Resizable desktop shell for the motion-analysis workspace."""
 
 from pathlib import Path
+from queue import Empty, SimpleQueue
 import re
 
 from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Qt, Signal, Slot
@@ -33,7 +34,6 @@ from app.project.manager import ProjectManager
 from app.project.discovery import ExistingResultDiscovery
 from app.project.importer import ExistingResultImporter
 from app.quality.audit import QualityAuditService
-from app.quality.report_store import QualityReportStore
 from app.tasks.base import TaskRequest
 from app.tasks.handle import TaskHandle
 
@@ -130,6 +130,7 @@ class MainWindow(QMainWindow):
         self._discovery_worker: _ExistingResultScanWorker | None = None
         self._scan_started_from_import = False
         self.initial_quality_handle: TaskHandle | None = None
+        self._quality_scan_progress: SimpleQueue[tuple[int, int]] | None = None
         self._quality_scan_timer = QTimer(self)
         self._quality_scan_timer.setInterval(100)
         self._quality_scan_timer.timeout.connect(self._poll_initial_quality_scan)
@@ -221,6 +222,9 @@ class MainWindow(QMainWindow):
             quality_page = self._pages[page_id]
             assert isinstance(quality_page, (Quality2DPage, Quality3DPage))
             quality_page.target_requested.connect(self._open_correction_target)
+        quality_2d_page = self._pages["quality_2d"]
+        assert isinstance(quality_2d_page, Quality2DPage)
+        quality_2d_page.scan_requested.connect(self._start_quality_scan)
         quality_3d_page = self._pages["quality_3d"]
         assert isinstance(quality_3d_page, Quality3DPage)
         quality_3d_page.playback_requested.connect(self._open_playback_target)
@@ -391,6 +395,9 @@ class MainWindow(QMainWindow):
             message = self.controller.last_error or "未切换项目"
             self.statusBar().showMessage(message)
             return False
+        self.initial_quality_handle = None
+        self._quality_scan_progress = None
+        self._quality_scan_timer.stop()
         self.project = project
         self.quality_correction_service = QualityCorrectionService(project)
         self.project_label.setText(str(project.manifest.get("name", project.root.name)))
@@ -459,7 +466,6 @@ class MainWindow(QMainWindow):
         if isinstance(project_page, ProjectPage):
             project_page.set_project(project)
         self.statusBar().showMessage(f"已打开项目：{project.root}")
-        self._start_initial_quality_scan_if_needed(project)
         return True
 
     def _refresh_video_sources(self) -> None:
@@ -513,43 +519,61 @@ class MainWindow(QMainWindow):
         if isinstance(comparison_page, ComparisonPage):
             comparison_page.set_members((member,))
 
-    def _start_initial_quality_scan_if_needed(self, project: ProjectManager) -> None:
-        self.initial_quality_handle = None
-        imported = project.manifest.get("imported_artifacts")
-        if not isinstance(imported, dict) or not imported.get("pose_2d_files"):
+    @Slot()
+    def _start_quality_scan(self) -> None:
+        project = self.project
+        if project is None:
+            self.statusBar().showMessage("请先打开项目，再开始二维质检")
             return
-        quality_path = project.path_for("quality_report")
-        if quality_path.is_file():
-            try:
-                current_report = QualityReportStore(project).load_current()
-            except (OSError, ValueError, KeyError):
-                current_report = None
-            has_trc = any((project.root / "pose-3d").glob("*.trc"))
-            metrics = current_report.metrics() if current_report is not None else {}
-            needs_2d_confidence_refresh = "2d_low_confidence_points" not in metrics
-            needs_trc_refresh = has_trc and "3d_total_points" not in metrics
-            if current_report is not None and not (
-                needs_2d_confidence_refresh or needs_trc_refresh
-            ):
+        if self.initial_quality_handle is not None:
+            snapshot = self.controller.supervisor.snapshot(self.initial_quality_handle.task_id)
+            if snapshot.status in {"queued", "running", "cancelling"}:
+                self.statusBar().showMessage("二维质检正在进行中…")
                 return
+            self._poll_initial_quality_scan()
         request = TaskRequest(
             str(project.manifest["project_id"]),
             self.controller.generation,
-            "初始质量扫描",
+            "二维质量扫描",
             {"project_root": str(project.root)},
         )
+        progress_queue: SimpleQueue[tuple[int, int]] = SimpleQueue()
 
         def work(token):
             token.raise_if_cancelled()
             service = QualityAuditService()
-            report = service.analyze(project)
+            def report_progress(completed: int, total: int) -> None:
+                token.raise_if_cancelled()
+                progress_queue.put((completed, total))
+
+            report = service.analyze(project, progress_callback=report_progress)
             token.raise_if_cancelled()
             service.save(report)
             return report
 
+        self._quality_scan_progress = progress_queue
         self.initial_quality_handle = self.controller.start_task(request, work)
+        quality_page = self._pages.get("quality_2d")
+        if isinstance(quality_page, Quality2DPage):
+            quality_page.set_scan_running(True)
         self._quality_scan_timer.start()
-        self.statusBar().showMessage("正在后台生成初始质量报告…")
+        self.statusBar().showMessage("正在后台读取二维姿态文件…")
+
+    def _drain_quality_scan_progress(self) -> None:
+        progress_queue = self._quality_scan_progress
+        if progress_queue is None:
+            return
+        latest: tuple[int, int] | None = None
+        while True:
+            try:
+                latest = progress_queue.get_nowait()
+            except Empty:
+                break
+        if latest is None:
+            return
+        quality_page = self._pages.get("quality_2d")
+        if isinstance(quality_page, Quality2DPage):
+            quality_page.set_scan_progress(*latest)
 
     @Slot()
     def _poll_initial_quality_scan(self) -> None:
@@ -557,11 +581,18 @@ class MainWindow(QMainWindow):
         if handle is None:
             self._quality_scan_timer.stop()
             return
+        self._drain_quality_scan_progress()
         snapshot = self.controller.supervisor.snapshot(handle.task_id)
         if snapshot.status not in {"completed", "failed", "cancelled"}:
             return
         self._quality_scan_timer.stop()
+        self._drain_quality_scan_progress()
         result = handle.wait(0)
+        self.initial_quality_handle = None
+        self._quality_scan_progress = None
+        quality_2d_page = self._pages.get("quality_2d")
+        if isinstance(quality_2d_page, Quality2DPage):
+            quality_2d_page.set_scan_running(False)
         project = self.project
         if (
             project is None
@@ -577,9 +608,11 @@ class MainWindow(QMainWindow):
                 page = self._pages.get(page_id)
                 if isinstance(page, (Quality2DPage, Quality3DPage)):
                     page.set_project(project)
-            self.statusBar().showMessage("初始质量报告已生成")
+            self.statusBar().showMessage("二维质量检查已完成")
         elif result.status == "failed":
-            self.statusBar().showMessage(f"初始质量扫描失败：{result.error}")
+            self.statusBar().showMessage(f"二维质量检查失败：{result.error}")
+        elif result.status == "cancelled":
+            self.statusBar().showMessage("二维质量检查已取消")
 
     def _open_correction_target(self, target: CorrectionTarget) -> bool:
         service = self.quality_correction_service

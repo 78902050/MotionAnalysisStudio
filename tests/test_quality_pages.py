@@ -173,6 +173,40 @@ class QualityPageTests(unittest.TestCase):
         self.assertEqual(page.issue_table.item(0, 5).text(), "0.180 < 0.500")
         page.close()
 
+    def test_2d_page_requests_manual_scan_and_pages_large_result_sets(self) -> None:
+        issues = tuple(
+            QualityIssue(
+                issue_id=f"low-confidence-{index:03d}",
+                kind="low_confidence",
+                severity="warning",
+                target=FrameAddress("camA", "raw", index),
+                person=PersonAddress("raw-1", raw_person_index=0),
+                keypoint=KeypointAddress("HALPE_26", "LWrist", 9),
+                message="低置信度",
+                evidence={"confidence": 0.2, "threshold": 0.5},
+            )
+            for index in range(205)
+        )
+        page = Quality2DPage()
+        requested: list[bool] = []
+        page.scan_requested.connect(lambda: requested.append(True))
+
+        page.set_report(_report(*issues), {})
+        page.scan_button.click()
+
+        self.assertEqual(requested, [True])
+        self.assertEqual(page.issue_table.rowCount(), 200)
+        self.assertEqual(page.issue_table.item(0, 0).text(), "low-confidence-000")
+        self.assertIn("第 1/2 页 · 共 205 项", page.issue_page_label.text())
+        self.assertTrue(page.next_issue_page_button.isEnabled())
+
+        page.next_issue_page_button.click()
+
+        self.assertEqual(page.issue_table.rowCount(), 5)
+        self.assertEqual(page.issue_table.item(0, 0).text(), "low-confidence-200")
+        self.assertIn("第 2/2 页 · 共 205 项", page.issue_page_label.text())
+        page.close()
+
     def test_project_manifest_and_current_report_feed_quality_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = ProjectManager.create(Path(directory) / "项目", "质量页面")
