@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -65,7 +66,10 @@ class PackagingDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("openvino_onnx_frontend.dll", completed.stderr + completed.stdout)
+        self.assertIn(
+            "openvino_onnx_frontend.dll",
+            self._normalized_diagnostic_output(completed),
+        )
 
     def test_dll_audit_rejects_bundle_without_openvino_cpu_plugin(self) -> None:
         completed = self._run_dll_audit(
@@ -74,7 +78,14 @@ class PackagingDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("openvino_intel_cpu_plugin.dll", completed.stderr + completed.stdout)
+        self.assertIn(
+            "openvino_intel_cpu_plugin.dll",
+            self._normalized_diagnostic_output(completed),
+        )
+
+    @staticmethod
+    def _normalized_diagnostic_output(completed: subprocess.CompletedProcess[str]) -> str:
+        return re.sub(r"\s+", "", completed.stderr + completed.stdout)
 
     def _run_dll_audit(self, toc_text: str) -> subprocess.CompletedProcess[str]:
         script = Path("scripts/audit_dist_dlls.ps1").resolve()

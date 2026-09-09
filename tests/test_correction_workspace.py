@@ -144,6 +144,17 @@ class CorrectionWorkspaceTests(unittest.TestCase):
         page.reset_selected_frame()
         self.assertEqual(session.document.value, (10.0, 20.0, 0.4))
 
+    def test_pose_browsing_timeline_stays_in_raw_frame_space_after_opening_resolution(self) -> None:
+        resolution = self._resolution()
+        assert resolution.edit_target is not None
+        page = CorrectionPage(session=_Session(resolution.edit_target))
+        page.set_pose_inventory({"camA": [12, 13, 14]})
+
+        page.open_resolution(resolution, page.session)
+
+        self.assertEqual(page.timeline.value(), 12)
+        page.close()
+
     def test_save_and_rerun_uses_application_controller(self) -> None:
         resolution = self._resolution()
         assert resolution.edit_target is not None

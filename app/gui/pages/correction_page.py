@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSettings, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
@@ -328,6 +328,9 @@ class CorrectionPage(QWidget):
         self._view_addresses: dict[str, FrameAddress] = {}
         self._view_failures: dict[str, str] = {}
         self._topologies = SkeletonTopologyRepository()
+        self._play_timer = QTimer(self)
+        self._play_timer.setInterval(33)
+        self._play_timer.timeout.connect(self._play_next_frame)
         self._build_ui()
         if self.provider is not None:
             self.provider.frame_ready.connect(self._on_frame_ready)
@@ -530,6 +533,9 @@ class CorrectionPage(QWidget):
         layout.setContentsMargins(6, 5, 6, 5)
         self.previous_frame_button = QPushButton("上一帧")
         self.next_frame_button = QPushButton("下一帧")
+        self.play_button = QPushButton("播放")
+        self.play_button.setObjectName("correction_play_button")
+        self.play_button.setEnabled(False)
         self.undo_button = QPushButton("撤销")
         self.undo_button.setObjectName("correction_undo_button")
         self.redo_button = QPushButton("重做")
@@ -546,6 +552,7 @@ class CorrectionPage(QWidget):
         for widget in (
             self.previous_frame_button,
             self.next_frame_button,
+            self.play_button,
             self.undo_button,
             self.redo_button,
             self.reset_button,
@@ -561,6 +568,8 @@ class CorrectionPage(QWidget):
         self.save_rerun_button.clicked.connect(self.save_and_rerun)
         self.previous_frame_button.clicked.connect(lambda: self._request_relative_frame(-1))
         self.next_frame_button.clicked.connect(lambda: self._request_relative_frame(1))
+        self.play_button.clicked.connect(self.toggle_playback)
+        self.timeline.sliderPressed.connect(self.stop_playback)
         self.timeline.sliderReleased.connect(self._timeline_released)
         area = make_scrollable_panel(bar)
         area.setObjectName("correction_action_scroll")
@@ -612,6 +621,7 @@ class CorrectionPage(QWidget):
         self.timeline.setRange(first, last)
 
     def _request_relative_frame(self, offset: int) -> None:
+        self.stop_playback()
         frames = self._pose_inventory.get(self.camera_selector.currentText(), ())
         if frames:
             current = self.timeline.value()
@@ -634,7 +644,40 @@ class CorrectionPage(QWidget):
         else:
             self.frame_requested.emit(self.timeline.value())
 
+    def toggle_playback(self) -> None:
+        frames = self._pose_inventory.get(self.camera_selector.currentText(), ())
+        if self._play_timer.isActive():
+            self.stop_playback()
+            return
+        if not frames:
+            self.play_button.setEnabled(False)
+            return
+        if self.timeline.value() >= frames[-1]:
+            self.timeline.setValue(frames[0])
+            self._emit_browse_request()
+        self._play_timer.start()
+        self.play_button.setText("暂停")
+
+    def stop_playback(self) -> None:
+        self._play_timer.stop()
+        if hasattr(self, "play_button"):
+            self.play_button.setText("播放")
+
+    def _play_next_frame(self) -> None:
+        frames = self._pose_inventory.get(self.camera_selector.currentText(), ())
+        if not frames:
+            self.stop_playback()
+            return
+        current = self.timeline.value()
+        next_frame = next((frame for frame in frames if frame > current), None)
+        if next_frame is None:
+            self.stop_playback()
+            return
+        self.timeline.setValue(next_frame)
+        self._emit_browse_request()
+
     def set_pose_inventory(self, inventory: dict[str, tuple[int, ...] | list[int]]) -> None:
+        self.stop_playback()
         normalized: dict[str, tuple[int, ...]] = {}
         for camera, frames in inventory.items():
             if not isinstance(camera, str) or not camera.strip():
@@ -651,6 +694,7 @@ class CorrectionPage(QWidget):
             if values:
                 normalized[camera] = values
         self._pose_inventory = normalized
+        self.play_button.setEnabled(bool(normalized))
         self.set_cameras(tuple(normalized))
         if normalized:
             self._apply_pose_camera(self.camera_selector.currentText(), emit=True)
@@ -717,6 +761,7 @@ class CorrectionPage(QWidget):
                 self._canvases[index].set_data_extent(*extent)
 
     def _select_camera(self, camera: str, *, persist: bool = True) -> None:
+        self.stop_playback()
         if camera not in self._camera_names:
             return
         if persist:
@@ -775,6 +820,7 @@ class CorrectionPage(QWidget):
         return f"{camera} · {source_label} · {status}"
 
     def clear_project_context(self) -> None:
+        self.stop_playback()
         self.session = None
         self.resolution = None
         self._expected_frames.clear()
@@ -846,17 +892,24 @@ class CorrectionPage(QWidget):
         self.raw_frame.setText(
             str(resolution.raw_frame) if resolution.raw_frame is not None else "—"
         )
-        synchronized_frame = (
-            resolution.synchronized_frame
+        pose_frames = (
+            self._pose_inventory.get(resolution.edit_target.address.camera, ())
+            if resolution.edit_target is not None
+            else ()
+        )
+        timeline_frame = (
+            resolution.raw_frame
+            if pose_frames and resolution.raw_frame is not None
+            else resolution.synchronized_frame
             if resolution.synchronized_frame is not None
             else resolution.raw_frame or 0
         )
-        if not self.timeline.minimum() <= synchronized_frame <= self.timeline.maximum():
+        if not self.timeline.minimum() <= timeline_frame <= self.timeline.maximum():
             self.set_timeline_range(
-                min(self.timeline.minimum(), synchronized_frame),
-                max(self.timeline.maximum(), synchronized_frame),
+                min(self.timeline.minimum(), timeline_frame),
+                max(self.timeline.maximum(), timeline_frame),
             )
-        self.timeline.setValue(synchronized_frame)
+        self.timeline.setValue(timeline_frame)
         self.issue_list.clear()
         self.issue_list.addItem(resolution.issue_id)
         self._fill_browse_selectors(resolution)

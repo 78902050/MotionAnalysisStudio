@@ -169,6 +169,29 @@ class CorrectionPageTests(unittest.TestCase):
         self.assertEqual(requested, [9, 11, 17])
         page.close()
 
+    def test_playback_advances_available_pose_frames_and_stops_at_the_end(self) -> None:
+        page = CorrectionPage()
+        page.set_pose_inventory({"cam01": [4, 7, 10]})
+        requested: list[tuple[str, int, int, int]] = []
+        page.browse_requested.connect(
+            lambda camera, frame, person, keypoint: requested.append(
+                (camera, frame, person, keypoint)
+            )
+        )
+
+        page.play_button.click()
+        self.assertTrue(page._play_timer.isActive())
+        page._play_next_frame()
+        self.assertEqual(page.timeline.value(), 7)
+        self.assertEqual(requested, [("cam01", 7, 0, 0)])
+        page._play_next_frame()
+        self.assertEqual(page.timeline.value(), 10)
+        page._play_next_frame()
+
+        self.assertFalse(page._play_timer.isActive())
+        self.assertEqual(page.play_button.text(), "播放")
+        page.close()
+
     def test_empty_project_clears_camera_bindings_from_previous_project(self) -> None:
         page = CorrectionPage()
         page.set_cameras(["cam01", "cam02"])
