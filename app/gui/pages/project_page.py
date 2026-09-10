@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QListWidget,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -129,6 +130,12 @@ class ProjectPage(QWidget):
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.scan_progress = QProgressBar()
+        self.scan_progress.setObjectName("project_scan_progress")
+        self.scan_progress.setRange(0, 0)
+        self.scan_progress.setFormat("正在扫描已处理试次…")
+        self.scan_progress.setVisible(False)
+        layout.addWidget(self.scan_progress)
         self._load_recent()
 
         outer = QVBoxLayout(self)
@@ -159,6 +166,7 @@ class ProjectPage(QWidget):
             self.scan_parent_requested.emit(Path(directory))
 
     def set_candidates(self, candidates: tuple[object, ...] | list[object]) -> None:
+        self.set_scan_running(False)
         self.candidate_table.setRowCount(0)
         for candidate in candidates:
             row = self.candidate_table.rowCount()
@@ -219,7 +227,14 @@ class ProjectPage(QWidget):
         self._remember(project.root)
 
     def show_error(self, message: str) -> None:
+        self.set_scan_running(False)
         self.status.setText(f"打开失败：{message}")
+
+    def set_scan_running(self, running: bool) -> None:
+        self.scan_progress.setVisible(running)
+        self.open_button.setEnabled(not running)
+        self.import_existing_button.setEnabled(not running)
+        self.scan_parent_button.setEnabled(not running)
 
     def _load_recent(self) -> None:
         self.recent_projects.clear()

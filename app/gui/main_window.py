@@ -832,6 +832,7 @@ class MainWindow(QMainWindow):
                 project_page.status.setText("已有目录扫描正在进行")
             return False
         if isinstance(project_page, ProjectPage):
+            project_page.set_scan_running(True)
             project_page.status.setText("正在后台扫描已处理试次…")
         thread = QThread(self)
         worker = _ExistingResultScanWorker(Path(path))
@@ -877,6 +878,9 @@ class MainWindow(QMainWindow):
         self._discovery_worker = None
         self._discovery_thread = None
         self._scan_started_from_import = False
+        project_page = self._pages.get("project")
+        if isinstance(project_page, ProjectPage):
+            project_page.set_scan_running(False)
 
     def register_existing_candidate(self, candidate: object) -> bool:
         project_page = self._pages.get("project")

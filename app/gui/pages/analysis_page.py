@@ -24,6 +24,7 @@ from app.analysis.model import MetricConfig, MetricDefinition, MetricTable, Traj
 from app.project.manager import ProjectManager
 
 from ..layout import make_scrollable_panel
+from ..widgets.loading_progress import LoadingProgressBar
 
 
 class _AnalysisWorker(QObject):
@@ -141,6 +142,8 @@ class AnalysisPage(QWidget):
         controls.addWidget(self.calculate_button)
         controls.addStretch(1)
         layout.addLayout(controls)
+        self.progress = LoadingProgressBar("analysis_loading_progress")
+        layout.addWidget(self.progress)
 
         form = QFormLayout()
         self.input_value = QLabel("—")
@@ -250,6 +253,7 @@ class AnalysisPage(QWidget):
             MetricDefinition(f"acceleration:{anchor}", f"{unit}/s^2", (anchor,)),
         )
         self.status.setText("正在后台计算指标…")
+        self.progress.begin("正在读取轨迹并计算指标…")
         self.calculate_button.setEnabled(False)
         self._thread = QThread(self)
         self._worker = _AnalysisWorker(
@@ -276,6 +280,7 @@ class AnalysisPage(QWidget):
 
     @Slot(str, int, object)
     def _calculation_finished(self, project_id: str, generation: int, value: object) -> None:
+        self.progress.finish()
         if project_id != self._project_id or generation != self._generation:
             return
         if not isinstance(value, MetricTable):
@@ -292,6 +297,7 @@ class AnalysisPage(QWidget):
 
     @Slot(str, int, str)
     def _calculation_failed(self, project_id: str, generation: int, reason: str) -> None:
+        self.progress.finish()
         if project_id == self._project_id and generation == self._generation:
             self.status.setText(f"运动学计算失败：{reason}")
 
@@ -308,6 +314,7 @@ class AnalysisPage(QWidget):
             self.metric_table.setItem(row, 3, QTableWidgetItem(preview))
 
     def _thread_finished(self) -> None:
+        self.progress.finish()
         self.calculate_button.setEnabled(True)
         self._thread = None
         self._worker = None
@@ -319,6 +326,7 @@ class AnalysisPage(QWidget):
         self._thread.requestInterruption()
         self._thread.quit()
         self._thread.wait(5000)
+        self.progress.finish()
 
     def closeEvent(self, event) -> None:
         self._generation += 1

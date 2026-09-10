@@ -29,6 +29,7 @@ from app.analysis.model import MetricTable
 from app.project.manager import ProjectManager
 
 from ..layout import make_scrollable_panel
+from ..widgets.loading_progress import LoadingProgressBar
 
 
 class _EventWorker(QObject):
@@ -125,6 +126,8 @@ class EventsPage(QWidget):
         self.detect_button.clicked.connect(self.detect)
         controls.addWidget(self.detect_button)
         layout.addLayout(controls)
+        self.progress = LoadingProgressBar("events_loading_progress")
+        layout.addWidget(self.progress)
 
         self.events_table = QTableWidget(0, 8)
         self.events_table.setObjectName("events_table")
@@ -223,6 +226,7 @@ class EventsPage(QWidget):
         )
         self.detect_button.setEnabled(False)
         self.status.setText("正在后台检测事件和构建周期…")
+        self.progress.begin("正在读取指标并检测事件…")
         self._thread = QThread(self)
         self._worker = _EventWorker(self._project_id or "memory", generation, self.metric_table, rule)
         self._worker.moveToThread(self._thread)
@@ -238,6 +242,7 @@ class EventsPage(QWidget):
 
     @Slot(str, int, object, object)
     def _detection_finished(self, project_id: str, generation: int, events: object, cycles: object) -> None:
+        self.progress.finish()
         if project_id != (self._project_id or "memory") or generation != self._generation:
             return
         if not isinstance(events, tuple) or not all(isinstance(event, Event) for event in events):
@@ -254,6 +259,7 @@ class EventsPage(QWidget):
 
     @Slot(str, int, str)
     def _detection_failed(self, project_id: str, generation: int, reason: str) -> None:
+        self.progress.finish()
         if project_id == (self._project_id or "memory") and generation == self._generation:
             self.status.setText(f"事件检测失败：{reason}")
 
@@ -361,6 +367,7 @@ class EventsPage(QWidget):
         self.manual_frame.setRange(min(self.metric_table.frames), max(self.metric_table.frames))
 
     def _thread_finished(self) -> None:
+        self.progress.finish()
         self.detect_button.setEnabled(True)
         self._thread = None
         self._worker = None
@@ -372,6 +379,7 @@ class EventsPage(QWidget):
         self._thread.requestInterruption()
         self._thread.quit()
         self._thread.wait(5000)
+        self.progress.finish()
 
     def closeEvent(self, event) -> None:
         self._generation += 1

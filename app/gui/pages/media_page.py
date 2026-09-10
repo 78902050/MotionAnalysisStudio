@@ -28,6 +28,7 @@ from app.tasks.base import CancellationToken, TaskRequest
 from app.tasks.handle import TaskHandle
 
 from ..layout import make_scrollable_panel
+from ..widgets.loading_progress import LoadingProgressBar
 
 
 def _declared_source(
@@ -188,6 +189,8 @@ class MediaPage(QWidget):
         self.table.setSortingEnabled(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table, 1)
+        self.progress = LoadingProgressBar("media_loading_progress")
+        layout.addWidget(self.progress)
         self.status = QLabel("请先打开项目")
         self.status.setObjectName("media_status")
         self.status.setWordWrap(True)
@@ -210,6 +213,7 @@ class MediaPage(QWidget):
         self._import_plan = None
         self._pending_import_summary = ""
         self._import_progress = SimpleQueue()
+        self.progress.finish()
         self.project = project
         self.model.set_records(())
         self._scanned_project_id = ""
@@ -239,6 +243,7 @@ class MediaPage(QWidget):
             self.refresh_button.setEnabled(False)
             self.import_videos_button.setEnabled(False)
             self.status.setText("正在后台读取视频元数据…")
+            self.progress.begin("正在读取视频元数据…")
             return
         self._finish(self._scan_project(project, CancellationToken()))
 
@@ -291,6 +296,9 @@ class MediaPage(QWidget):
                 except Empty:
                     break
                 self.status.setText(f"正在导入 {completed}/{total}：{name}")
+                self.progress.set_progress(
+                    completed, total, f"正在导入 {completed}/{total}：{name}（%p%）"
+                )
         handle = self._handle
         if handle is None:
             self._timer.stop()
@@ -315,6 +323,7 @@ class MediaPage(QWidget):
         if result.status != "succeeded":
             label = "视频导入" if operation == "import" else "媒体扫描"
             self.status.setText(f"{label}{'已取消' if result.status == 'cancelled' else '失败'}：{result.error or result.status}")
+            self.progress.finish()
             return
         if operation == "import":
             if not isinstance(result.value, VideoImportResult):
@@ -334,6 +343,7 @@ class MediaPage(QWidget):
             self._import_plan = None
             self.sources_changed.emit()
             self._scanned_project_id = ""
+            self.progress.begin("正在刷新导入后的视频信息…")
             self.scan(force=True)
             return
         if not isinstance(result.value, tuple):
@@ -342,6 +352,7 @@ class MediaPage(QWidget):
         self._finish(result.value)
 
     def _finish(self, records: tuple[MediaRecord, ...]) -> None:
+        self.progress.finish()
         self.model.set_records(records)
         issues = sum(bool(record.issue) for record in records)
         summary = f"已读取 {len(records)} 台相机；映射问题 {issues} 个"
@@ -461,6 +472,7 @@ class MediaPage(QWidget):
         self.import_videos_button.setEnabled(False)
         self.cancel_import_button.setEnabled(True)
         self.status.setText(f"正在导入 0/{len(plan.items)}")
+        self.progress.begin(f"正在导入 0/{len(plan.items)}（%p%）", total=len(plan.items))
         self._timer.start()
 
     def _cancel_import(self) -> None:

@@ -69,6 +69,9 @@ class TaskSupervisorTests(unittest.TestCase):
 
         strip.set_handle(handle)
         self.assertTrue(strip.cancel_button.isEnabled())
+        self.assertFalse(strip.progress.isHidden())
+        self.assertEqual(strip.progress.minimum(), 0)
+        self.assertEqual(strip.progress.maximum(), 0)
         self.assertIn("长任务", strip.label.text())
 
         strip.cancel_button.click()
@@ -77,6 +80,7 @@ class TaskSupervisorTests(unittest.TestCase):
 
         self.assertEqual(result.status, "cancelled")
         self.assertFalse(strip.cancel_button.isEnabled())
+        self.assertTrue(strip.progress.isHidden())
         self.assertIn("已取消", strip.label.text())
         self.assertTrue(supervisor.wait_for_shutdown(1000))
 

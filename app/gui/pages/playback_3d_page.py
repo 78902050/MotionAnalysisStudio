@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from app.application.controller import ApplicationController
 from app.gui.widgets.trajectory_canvas import TrajectoryCanvas
+from app.gui.widgets.loading_progress import LoadingProgressBar
 from app.playback.catalog import TrajectoryCatalog
 from app.playback.clock import PlaybackClock
 from app.playback.model import PlaybackTrajectory, TrajectorySource
@@ -89,6 +90,8 @@ class Playback3DPage(QWidget):
         self.status.setWordWrap(True)
         header_layout.addWidget(self.status, 1)
         root.addWidget(header)
+        self.load_progress = LoadingProgressBar("playback_load_progress")
+        root.addWidget(self.load_progress)
 
         self.canvas = TrajectoryCanvas()
         self.canvas.setObjectName("trajectory_canvas")
@@ -213,6 +216,7 @@ class Playback3DPage(QWidget):
 
     def set_project(self, project: ProjectManager | None) -> None:
         self.stop()
+        self.load_progress.finish()
         self.project = project
         self.trajectory = None
         self.pending_target = None
@@ -244,6 +248,7 @@ class Playback3DPage(QWidget):
         if self._handle is not None:
             self._handle.cancel()
         self.status.setText(f"正在后台读取 {source.path.name}…")
+        self.load_progress.begin(f"正在读取 {source.path.name}…")
         if (
             self.controller is not None
             and self.project is not None
@@ -259,6 +264,7 @@ class Playback3DPage(QWidget):
         try:
             self._finish_load(self._load_work(source, CancellationToken()))
         except Exception as exc:
+            self.load_progress.finish()
             self.status.setText(f"轨迹读取失败：{type(exc).__name__}: {exc}")
 
     @staticmethod
@@ -279,6 +285,7 @@ class Playback3DPage(QWidget):
             return
         self.load_timer.stop()
         self._handle = None
+        self.load_progress.finish()
         if self.project is None or self.controller is None:
             return
         if not self.controller.supervisor.accepts_result(
@@ -293,6 +300,7 @@ class Playback3DPage(QWidget):
         self._finish_load(result.value)
 
     def _finish_load(self, trajectory: PlaybackTrajectory) -> None:
+        self.load_progress.finish()
         self.trajectory = trajectory
         self.frame_index = 0
         edges = self._topologies.edges_for_labels(trajectory.labels)
@@ -434,6 +442,7 @@ class Playback3DPage(QWidget):
         if self._handle is not None:
             self._handle.cancel()
             self._handle = None
+        self.load_progress.finish()
 
     def _persist_layout(self) -> None:
         self.settings.setValue("playback3d/splitter_sizes", self.workspace_splitter.sizes())

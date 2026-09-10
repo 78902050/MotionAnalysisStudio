@@ -4,6 +4,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 from app.tasks.handle import TaskHandle
+from .widgets.loading_progress import LoadingProgressBar
 
 
 class TaskStatusStrip(QWidget):
@@ -13,10 +14,13 @@ class TaskStatusStrip(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
         self.label = QLabel("无后台任务")
+        self.progress = LoadingProgressBar("task_center_progress")
+        self.progress.setMaximumWidth(260)
         self.cancel_button = QPushButton("取消")
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self._cancel_active)
         layout.addWidget(self.label, 1)
+        layout.addWidget(self.progress)
         layout.addWidget(self.cancel_button)
         self._active_handle: TaskHandle | None = None
         self._status_timer = QTimer(self)
@@ -27,6 +31,10 @@ class TaskStatusStrip(QWidget):
         self._active_handle = None
         self._status_timer.stop()
         self.label.setText(f"后台任务：{name}" if running else f"任务完成：{name}")
+        if running:
+            self.progress.begin(f"正在执行：{name}")
+        else:
+            self.progress.finish()
         self.cancel_button.setEnabled(running)
 
     def set_handle(self, handle: TaskHandle) -> None:
@@ -34,6 +42,7 @@ class TaskStatusStrip(QWidget):
 
         self._active_handle = handle
         self.label.setText(f"后台任务：{handle.name}")
+        self.progress.begin(f"正在执行：{handle.name}")
         self.cancel_button.setEnabled(True)
         self._status_timer.start()
 
@@ -46,6 +55,7 @@ class TaskStatusStrip(QWidget):
         except TimeoutError:
             return
         self._status_timer.stop()
+        self.progress.finish()
         self.cancel_button.setEnabled(False)
         labels = {
             "succeeded": "已完成",

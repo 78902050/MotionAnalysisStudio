@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -131,6 +132,12 @@ class CalibrationPage(QWidget):
         actions.addWidget(self.refresh_button)
         actions.addStretch(1)
         layout.addLayout(actions)
+        self.preview_progress = QProgressBar()
+        self.preview_progress.setObjectName("calibration_preview_progress")
+        self.preview_progress.setRange(0, 0)
+        self.preview_progress.setFormat("正在读取并验证标定文件…")
+        self.preview_progress.setVisible(False)
+        layout.addWidget(self.preview_progress)
 
         card = QFrame()
         card.setObjectName("calibration_active_card")
@@ -256,6 +263,7 @@ class CalibrationPage(QWidget):
     def set_project(self, project: ProjectManager | None) -> None:
         self._preview_timer.stop()
         self._preview_handle = None
+        self.preview_progress.setVisible(False)
         self.pending_preview = None
         self.project = project
         self.caliscope_workspace.setText(str(project.root) if project is not None else "")
@@ -387,6 +395,7 @@ class CalibrationPage(QWidget):
             self.pending_preview = None
             self.activate_button.setEnabled(False)
             self.preview_status.setText("正在后台解析并验证标定文件…")
+            self.preview_progress.setVisible(True)
             self._preview_handle = self.controller.start_task(request, work)
             self._preview_timer.start()
             return
@@ -410,6 +419,7 @@ class CalibrationPage(QWidget):
             return
         self._preview_timer.stop()
         self._preview_handle = None
+        self.preview_progress.setVisible(False)
         project_id = str(self.project.manifest["project_id"]) if self.project is not None else ""
         generation = self.controller.generation if self.controller is not None else -1
         if result.project_id != project_id or result.generation != generation:
@@ -420,6 +430,7 @@ class CalibrationPage(QWidget):
         self._show_preview(result.value)
 
     def _show_preview(self, preview: CalibrationPreview) -> None:
+        self.preview_progress.setVisible(False)
         self.pending_preview = preview
         blocked = any(issue.severity == "blocking" for issue in preview.issues)
         self.preview_source.setText(f"{preview.source_format} · {preview.source_path}")

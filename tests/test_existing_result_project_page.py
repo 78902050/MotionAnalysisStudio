@@ -7,7 +7,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QProgressBar, QPushButton
 
 from app.gui.main_window import MainWindow
 from app.gui.pages.project_page import ProjectPage
@@ -34,6 +34,9 @@ class ExistingResultProjectPageTests(unittest.TestCase):
 
         self.assertIsNotNone(page.findChild(QPushButton, "project_import_existing_button"))
         self.assertIsNotNone(page.findChild(QPushButton, "project_scan_parent_button"))
+        progress = page.findChild(QProgressBar, "project_scan_progress")
+        self.assertIsNotNone(progress)
+        self.assertTrue(progress.isHidden())
         self.assertEqual(page.candidate_table.columnCount(), 8)
 
     def test_main_window_imports_one_processed_folder_and_opens_it(self) -> None:

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -101,6 +102,12 @@ class AssociationPage(QWidget):
         self.status.setWordWrap(True)
         toolbar.addWidget(self.status, 1)
         layout.addLayout(toolbar)
+        self.progress = QProgressBar()
+        self.progress.setObjectName("association_loading_progress")
+        self.progress.setRange(0, 0)
+        self.progress.setFormat("正在读取关联数据…")
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
 
         layout.addWidget(QLabel("已有 pose-associated 结果（只读）"))
         self.existing_results_table = QTableWidget(0, 3)
@@ -170,6 +177,7 @@ class AssociationPage(QWidget):
             self._materialize_handle.cancel()
         self._materialize_timer.stop()
         self._materialize_handle = None
+        self.progress.setVisible(False)
         self._generation += 1
         self.project = project
         self._project_id = str(project.manifest.get("project_id", "")) if project else ""
@@ -211,6 +219,8 @@ class AssociationPage(QWidget):
         generation = self._generation
         self._project_id = str(self.project.manifest.get("project_id", ""))
         self.status.setText("正在后台扫描 pose、pose-sync 和 pose-associated…")
+        self.progress.setFormat("正在扫描关联候选…")
+        self.progress.setVisible(True)
         self.refresh_button.setEnabled(False)
         self._thread = QThread(self)
         self._worker = _AssociationWorker(self.project, generation)
@@ -227,6 +237,7 @@ class AssociationPage(QWidget):
 
     @Slot(str, int, object)
     def _analysis_finished(self, project_id: str, generation: int, report: object) -> None:
+        self.progress.setVisible(False)
         if project_id != self._project_id or generation != self._generation:
             return
         if not isinstance(report, AssociationReport):
@@ -241,10 +252,12 @@ class AssociationPage(QWidget):
 
     @Slot(str, int, str)
     def _analysis_failed(self, project_id: str, generation: int, reason: str) -> None:
+        self.progress.setVisible(False)
         if project_id == self._project_id and generation == self._generation:
             self.status.setText(f"关联扫描失败：{reason}")
 
     def _thread_finished(self) -> None:
+        self.progress.setVisible(False)
         self.refresh_button.setEnabled(True)
         self._thread = None
         self._worker = None
@@ -336,6 +349,8 @@ class AssociationPage(QWidget):
             self._materialize_timer.start()
             self.materialize_button.setEnabled(False)
             self.status.setText(f"正在后台物化 {len(constraints)} 个确认关联…")
+            self.progress.setFormat("正在写入已确认关联…")
+            self.progress.setVisible(True)
             return
         result = AssociationMaterializer().materialize(self.project, constraints)
         self._show_materialize_result(result, len(constraints))
@@ -351,6 +366,7 @@ class AssociationPage(QWidget):
             return
         self._materialize_timer.stop()
         self._materialize_handle = None
+        self.progress.setVisible(False)
         if self.project is None:
             return
         project_id = str(self.project.manifest.get("project_id", ""))

@@ -170,10 +170,13 @@ class VideoImportGuiTests(unittest.TestCase):
                 self.assertTrue(started.wait(1))
                 page._poll()
                 self.assertIn("正在导入 1/1", page.status.text())
+                self.assertFalse(page.progress.isHidden())
+                self.assertEqual(page.progress.value(), 1)
                 page.cancel_import_button.click()
                 self._wait_for_idle(page)
 
             self.assertIn("已取消", page.status.text())
+            self.assertTrue(page.progress.isHidden())
             self.assertFalse(page.cancel_import_button.isEnabled())
             page.close()
 

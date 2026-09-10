@@ -33,6 +33,7 @@ from app.visualization.skeleton import SkeletonTopologyRepository, skeleton_edge
 
 from ..layout import make_resizable_splitter, make_scrollable_panel
 from ..theme import palette_for_application
+from ..widgets.loading_progress import LoadingProgressBar
 
 if TYPE_CHECKING:
     from app.application.quality_correction_service import CorrectionResolution
@@ -349,6 +350,7 @@ class CorrectionPage(QWidget):
         self._canvases: list[CorrectionCanvas] = []
         self._view_row_splitters: list[QSplitter] = []
         self._expected_frames: dict[str, int] = {}
+        self._video_loading_cameras: set[str] = set()
         self._camera_names: list[str] = []
         self._camera_extents: dict[str, tuple[int, int]] = {}
         self._pose_inventory: dict[str, tuple[int, ...]] = {}
@@ -482,6 +484,9 @@ class CorrectionPage(QWidget):
         self.view_hint = QLabel("视频读取在后台线程进行")
         self.view_hint.setProperty("uiRole", "accent")
         controls.addWidget(self.view_hint)
+        self.video_loading_progress = LoadingProgressBar("correction_video_loading_progress")
+        self.video_loading_progress.setMaximumWidth(190)
+        controls.addWidget(self.video_loading_progress)
         layout.addLayout(controls)
 
         self.views_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -857,6 +862,20 @@ class CorrectionPage(QWidget):
         self._request_visible_frames()
 
     def _request_visible_frames(self) -> None:
+        requests = {
+            str(card.property("camera") or "")
+            for card in self._view_cards
+            if str(card.property("camera") or "") not in self._view_failures
+            and str(card.property("camera") or "") in self._view_addresses
+            and self.provider is not None
+        }
+        self._video_loading_cameras = requests
+        if requests:
+            self.video_loading_progress.begin(
+                f"正在读取 0/{len(requests)} 路视频帧（%p%）", total=len(requests)
+            )
+        else:
+            self.video_loading_progress.finish()
         for index, card in enumerate(self._view_cards):
             camera = str(card.property("camera") or "")
             if camera in self._view_failures:
@@ -879,6 +898,8 @@ class CorrectionPage(QWidget):
 
     def clear_project_context(self) -> None:
         self.stop_playback()
+        self._video_loading_cameras.clear()
+        self.video_loading_progress.finish()
         self.session = None
         self.resolution = None
         self._expected_frames.clear()
@@ -1304,6 +1325,7 @@ class CorrectionPage(QWidget):
             if card.property("camera") == camera:
                 self._canvases[index].set_frame(image)
                 self._view_labels[index].setText(self._video_status(camera, f"帧 {frame}"))
+        self._update_video_loading_progress(camera)
         self._present_pending_skeleton(camera)
         if (
             self._play_timer.isActive()
@@ -1320,6 +1342,7 @@ class CorrectionPage(QWidget):
                 self._view_labels[index].setText(
                     self._video_status(camera, f"帧 {frame} · {reason}")
                 )
+        self._update_video_loading_progress(camera)
         if self._pending_skeleton_camera == camera:
             self._clear_camera_canvas(camera)
         self._present_pending_skeleton(camera)
@@ -1329,3 +1352,16 @@ class CorrectionPage(QWidget):
             and camera == self.camera_selector.currentText()
         ):
             self._playback_waiting_for_video = False
+
+    def _update_video_loading_progress(self, camera: str) -> None:
+        if camera not in self._video_loading_cameras:
+            return
+        self._video_loading_cameras.remove(camera)
+        total = self.video_loading_progress.maximum()
+        completed = total - len(self._video_loading_cameras)
+        if self._video_loading_cameras:
+            self.video_loading_progress.set_progress(
+                completed, total, f"正在读取 {completed}/{total} 路视频帧（%p%）"
+            )
+        else:
+            self.video_loading_progress.finish()

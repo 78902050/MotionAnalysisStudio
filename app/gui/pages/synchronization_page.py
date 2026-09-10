@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -116,6 +117,12 @@ class SynchronizationPage(QWidget):
         self.mapping_table.setObjectName("synchronization_mapping_table")
         self.mapping_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.mapping_table, 1)
+        self.analysis_progress = QProgressBar()
+        self.analysis_progress.setObjectName("synchronization_analysis_progress")
+        self.analysis_progress.setRange(0, 0)
+        self.analysis_progress.setFormat("正在解析同步映射…")
+        self.analysis_progress.setVisible(False)
+        layout.addWidget(self.analysis_progress)
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -129,6 +136,7 @@ class SynchronizationPage(QWidget):
     def set_project(self, project: ProjectManager | None) -> None:
         self._analysis_timer.stop()
         self._analysis_handle = None
+        self.analysis_progress.setVisible(False)
         self.project = project
         self.refresh()
 
@@ -168,6 +176,7 @@ class SynchronizationPage(QWidget):
                 return analyzer, report
 
             self.status.setText("正在后台解析同步映射…")
+            self.analysis_progress.setVisible(True)
             self._analysis_handle = self.controller.start_task(request, work)
             self._analysis_timer.start()
             self.refresh_mapping()
@@ -186,6 +195,7 @@ class SynchronizationPage(QWidget):
             return
         self._analysis_timer.stop()
         self._analysis_handle = None
+        self.analysis_progress.setVisible(False)
         project_id = str(self.project.manifest["project_id"]) if self.project is not None else ""
         generation = self.controller.generation if self.controller is not None else -1
         if result.project_id != project_id or result.generation != generation:

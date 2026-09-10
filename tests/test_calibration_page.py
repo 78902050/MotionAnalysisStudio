@@ -55,6 +55,7 @@ class CalibrationPageTests(unittest.TestCase):
             page.preview_file(Path("tests/fixtures/real_data/calibration/camera_array.toml"))
 
             self.assertIn("后台", page.preview_status.text())
+            self.assertFalse(page.preview_progress.isHidden())
             for _ in range(100):
                 self.application.processEvents()
                 if page.activate_button.isEnabled():

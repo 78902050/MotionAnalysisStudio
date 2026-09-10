@@ -27,6 +27,7 @@ from app.tasks.base import TaskRequest
 from app.tasks.handle import TaskHandle
 
 from ..layout import make_scrollable_panel
+from ..widgets.loading_progress import LoadingProgressBar
 
 
 class _ComparisonWorker(QObject):
@@ -134,6 +135,8 @@ class ComparisonPage(QWidget):
             setattr(self, f"export_{format_name}_button", button)
             controls.addWidget(button)
         layout.addLayout(controls)
+        self.progress = LoadingProgressBar("comparison_loading_progress")
+        layout.addWidget(self.progress)
 
         self.summary = QLabel("尚未生成报告")
         self.summary.setObjectName("comparison_summary")
@@ -223,6 +226,7 @@ class ComparisonPage(QWidget):
         context_id = self._context_id or "memory"
         self.build_button.setEnabled(False)
         self.status.setText("正在后台生成对比报告…")
+        self.progress.begin("正在读取成员数据并生成对比报告…")
         self._thread = QThread(self)
         self._worker = _ComparisonWorker(context_id, generation, self._service, request)
         self._worker.moveToThread(self._thread)
@@ -258,6 +262,7 @@ class ComparisonPage(QWidget):
 
     @Slot(str, int, str)
     def _report_failed(self, context_id: str, generation: int, reason: str) -> None:
+        self.progress.finish()
         if context_id == (self._context_id or "memory") and generation == self._generation:
             self.status.setText(f"对比报告生成失败：{reason}")
 
@@ -267,7 +272,13 @@ class ComparisonPage(QWidget):
         self._pending_rows = report.rows
         self._fill_position = 0
         if self._pending_rows:
+            self.progress.begin(
+                f"正在填充 0/{len(self._pending_rows)} 条对比结果（%p%）",
+                total=len(self._pending_rows),
+            )
             self._fill_timer.start()
+        else:
+            self.progress.finish()
 
     def _append_table_chunk(self) -> None:
         end = min(self._fill_position + 100, len(self._pending_rows))
@@ -289,15 +300,22 @@ class ComparisonPage(QWidget):
             for column, value in enumerate(display):
                 self.comparison_table.setItem(row, column, QTableWidgetItem("—" if value is None else str(value)))
         self._fill_position = end
+        self.progress.set_progress(
+            self._fill_position,
+            len(self._pending_rows),
+            f"正在填充 {self._fill_position}/{len(self._pending_rows)} 条对比结果（%p%）",
+        )
         if self._fill_position >= len(self._pending_rows):
             self._fill_timer.stop()
             self._pending_rows = ()
             self._fill_position = 0
+            self.progress.finish()
 
     def _stop_table_fill(self) -> None:
         self._fill_timer.stop()
         self._pending_rows = ()
         self._fill_position = 0
+        self.progress.finish()
 
     def export_report(self, path: Path, format: str) -> None:
         if self.report is None:
@@ -322,6 +340,7 @@ class ComparisonPage(QWidget):
             self._export_handle = self.controller.start_task(request, work)
             self._export_timer.start()
             self.status.setText(f"正在后台导出 {format.upper()}…")
+            self.progress.begin(f"正在导出 {format.upper()}…")
             return
         ReportExporter().export(self.report, Path(path), format)
         self.status.setText(f"已导出 {format.upper()}：{path}")
@@ -337,6 +356,7 @@ class ComparisonPage(QWidget):
             return
         self._export_timer.stop()
         self._export_handle = None
+        self.progress.finish()
         if self.project is None:
             return
         project_id = str(self.project.manifest.get("project_id", ""))
@@ -355,6 +375,7 @@ class ComparisonPage(QWidget):
             self._export_handle.cancel()
         self._export_handle = None
         self._export_timer.stop()
+        self.progress.finish()
 
     def _choose_export(self, format: str) -> None:
         if self.report is None:
