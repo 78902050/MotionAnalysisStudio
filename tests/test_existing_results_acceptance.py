@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 import shutil
@@ -22,6 +23,15 @@ class ExistingResultsAcceptanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
+
+    def _wait_for_project_results(self, window: MainWindow, timeout: float = 3.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            if not window._project_loading_project_id:
+                return
+            time.sleep(0.01)
+        self.fail("已有结果项目索引未在限定时间内完成")
 
     def test_data_only_trial_is_registered_reported_and_opened(self) -> None:
         source = Path("tests/fixtures/real_data").resolve()
@@ -48,26 +58,29 @@ class ExistingResultsAcceptanceTests(unittest.TestCase):
             self.assertIn("poseEstimation", existing["general_pose2sim_stages"])
             registered_root = Path(existing["registered_root"])
             window = MainWindow()
-            self.assertTrue(window.open_project_path(registered_root))
-            pipeline = window._pages["pipeline"]
-            self.assertIsInstance(pipeline, PipelinePage)
-            self.assertTrue(pipeline.run_current_button.isEnabled())
-            correction = window._pages["correction_2d"]
-            self.assertIsInstance(correction, CorrectionPage)
-            self.assertIsNotNone(correction.session)
-            self.assertEqual(correction.camera_selector.currentText(), "cam01")
-            self.assertGreater(correction.person_selector.count(), 0)
-            self.assertEqual(correction.keypoint_selector.count(), 26)
-            analysis = window._pages["analysis"]
-            self.assertIsInstance(analysis, AnalysisPage)
-            self.assertGreater(analysis.trajectory_selector.count(), 0)
-            self.assertTrue(
-                all(
-                    "video_path" not in camera
-                    for camera in window.project.manifest["cameras"]
+            try:
+                self.assertTrue(window.open_project_path(registered_root))
+                self._wait_for_project_results(window)
+                pipeline = window._pages["pipeline"]
+                self.assertIsInstance(pipeline, PipelinePage)
+                self.assertTrue(pipeline.run_current_button.isEnabled())
+                correction = window._pages["correction_2d"]
+                self.assertIsInstance(correction, CorrectionPage)
+                self.assertIsNotNone(correction.session)
+                self.assertEqual(correction.camera_selector.currentText(), "cam01")
+                self.assertGreater(correction.person_selector.count(), 0)
+                self.assertEqual(correction.keypoint_selector.count(), 26)
+                analysis = window._pages["analysis"]
+                self.assertIsInstance(analysis, AnalysisPage)
+                self.assertGreater(analysis.trajectory_selector.count(), 0)
+                self.assertTrue(
+                    all(
+                        "video_path" not in camera
+                        for camera in window.project.manifest["cameras"]
+                    )
                 )
-            )
-            window.close()
+            finally:
+                window.close()
 
     def test_pose2sim_marker_video_is_decoded_when_original_is_absent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

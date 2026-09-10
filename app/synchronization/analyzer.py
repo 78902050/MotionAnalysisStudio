@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from app.project.manager import ProjectManager
@@ -23,7 +25,12 @@ class SynchronizationAnalyzer:
         self._issues: tuple[SynchronizationIssue, ...] = ()
         self._project: ProjectManager | None = None
 
-    def analyze(self, project: ProjectManager) -> SynchronizationReport:
+    def analyze(
+        self,
+        project: ProjectManager,
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> SynchronizationReport:
         self._project = project
         self._mappings.clear()
         self._offset_ranges.clear()
@@ -33,6 +40,8 @@ class SynchronizationAnalyzer:
         self._issues = ()
         path = project.root / "synchronization" / "mapping.json"
         issues: list[SynchronizationIssue] = []
+        if cancelled is not None and cancelled():
+            return SynchronizationReport((), (), {})
         if path.is_file():
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
@@ -45,7 +54,10 @@ class SynchronizationAnalyzer:
                 self._read_frame_mappings(value.get("mappings"), path, issues)
                 self._read_offsets(value.get("offsets"), path, issues)
         else:
-            inferred = self._read_filename_offsets(project, issues)
+            inferred = self._read_filename_offsets(project, issues, cancelled=cancelled)
+
+        if cancelled is not None and cancelled():
+            return SynchronizationReport((), (), {})
 
         try:
             overrides = SynchronizationOverrideStore(project.root).load()
@@ -223,7 +235,13 @@ class SynchronizationAnalyzer:
             except (KeyError, TypeError, ValueError) as exc:
                 issues.append(SynchronizationIssue("warning", f"忽略无效同步 offset：{exc}"))
 
-    def _read_filename_offsets(self, project: ProjectManager, issues: list[SynchronizationIssue]) -> bool:
+    def _read_filename_offsets(
+        self,
+        project: ProjectManager,
+        issues: list[SynchronizationIssue],
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> bool:
         raw_root = project.root / "pose"
         sync_root = project.root / "pose-sync"
         cameras: set[str] = set()
@@ -239,10 +257,14 @@ class SynchronizationAnalyzer:
                 )
         inferred = False
         for camera in sorted(cameras):
+            if cancelled is not None and cancelled():
+                return inferred
             raw_dir = raw_root / f"{camera}_json"
             sync_dir = sync_root / f"{camera}_json"
-            raw_frames = self._filename_frames(raw_dir)
-            sync_frames = self._filename_frames(sync_dir)
+            raw_frames = self._filename_frames(raw_dir, cancelled=cancelled)
+            sync_frames = self._filename_frames(sync_dir, cancelled=cancelled)
+            if cancelled is not None and cancelled():
+                return inferred
             if not raw_frames or not sync_frames:
                 continue
             delta = min(raw_frames) - min(sync_frames)
@@ -323,12 +345,28 @@ class SynchronizationAnalyzer:
             issues.append(SynchronizationIssue("blocking", "人工映射文件没有该相机的有效映射", camera))
 
     @staticmethod
-    def _filename_frames(directory: Path) -> set[int]:
+    def _filename_frames(
+        directory: Path,
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> set[int]:
         if not directory.is_dir():
             return set()
         result: set[int] = set()
-        for item in directory.glob("*.json"):
-            match = re.search(r"_(\d+)\.json$", item.name)
-            if match:
-                result.add(int(match.group(1)))
+        try:
+            with os.scandir(directory) as entries:
+                for number, item in enumerate(entries, start=1):
+                    if (
+                        number % 256 == 0
+                        and cancelled is not None
+                        and cancelled()
+                    ):
+                        return result
+                    if not item.is_file():
+                        continue
+                    match = re.search(r"_(\d+)\.json$", item.name)
+                    if match:
+                        result.add(int(match.group(1)))
+        except OSError:
+            return result
         return result

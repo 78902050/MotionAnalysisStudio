@@ -179,10 +179,18 @@ class _QualityPageBase(QWidget):
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         return label
 
-    def set_project(self, project: ProjectManager | None) -> None:
+    def set_project(
+        self,
+        project: ProjectManager | None,
+        *,
+        load_report: bool = True,
+    ) -> None:
         self.project = project
         if project is None:
             self._clear("请先打开项目")
+            return
+        if not load_report:
+            self._clear("正在后台读取质量报告…")
             return
         try:
             report = QualityReportStore(project).load_current()
@@ -193,6 +201,10 @@ class _QualityPageBase(QWidget):
             self._clear(f"质量报告无法读取：{exc}")
             return
         self.set_report(report, project.manifest)
+
+    def show_report_unavailable(self, reason: str) -> None:
+        """Show a completed background-load state without retrying disk I/O."""
+        self._clear(reason)
 
     def set_report(
         self,
@@ -439,6 +451,9 @@ class Quality2DPage(_QualityPageBase):
     ) -> None:
         two_dimensional = self.issues_for_report(report)
         self._two_dimensional_issues = two_dimensional
+        if hasattr(self, "camera_filter"):
+            self._filtered_issue_views = ()
+            self._filtered_report_issue_cache = ()
         super().set_report(
             QualityReport(
                 report.report_id,
@@ -459,26 +474,22 @@ class Quality2DPage(_QualityPageBase):
         previous_camera = self.camera_filter.currentData()
         previous_person = self.person_filter.currentData()
         previous_keypoints = self._selected_keypoints()
-        cameras = sorted(
-            {
-                row.target.address.camera
-                for row in self.viewer_model.issues
-                if row.target is not None
-            },
-            key=str.casefold,
-        )
-        keypoints = sorted(
-            {
-                row.target.keypoint.keypoint_name
-                for row in self.viewer_model.issues
-                if row.target is not None
-            },
-            key=str.casefold,
-        )
+        cameras: set[str] = set()
+        keypoints: set[str] = set()
+        people_from_issues: set[int] = set()
+        for row in self.viewer_model.issues:
+            target = row.target
+            if target is None:
+                continue
+            cameras.add(target.address.camera)
+            keypoints.add(target.keypoint.keypoint_name)
+            raw_index = target.person.raw_person_index
+            if isinstance(raw_index, int) and not isinstance(raw_index, bool) and raw_index >= 0:
+                people_from_issues.add(raw_index)
         self._replace_filter_options(
             self.camera_filter,
             "全部相机",
-            ((camera, camera) for camera in cameras),
+            ((camera, camera) for camera in sorted(cameras, key=str.casefold)),
             previous_camera,
         )
         self._replace_filter_options(
@@ -486,11 +497,14 @@ class Quality2DPage(_QualityPageBase):
             "全部人物",
             (
                 (f"人物 {raw_index}", raw_index)
-                for raw_index in self._actual_person_indices()
+                for raw_index in self._actual_person_indices(people_from_issues)
             ),
             previous_person,
         )
-        self._replace_keypoint_options(keypoints, previous_keypoints)
+        self._replace_keypoint_options(
+            sorted(keypoints, key=str.casefold),
+            previous_keypoints,
+        )
 
     @staticmethod
     def _replace_filter_options(
@@ -580,7 +594,10 @@ class Quality2DPage(_QualityPageBase):
             text = f"已选 {len(selected)} 个关键点"
         self.keypoint_filter.lineEdit().setText(text)
 
-    def _actual_person_indices(self) -> tuple[int, ...]:
+    def _actual_person_indices(
+        self,
+        fallback: set[int] | None = None,
+    ) -> tuple[int, ...]:
         if self.viewer_model is None:
             return ()
         pose_input = self.viewer_model.report.inputs.get("pose_2d")
@@ -594,31 +611,12 @@ class Quality2DPage(_QualityPageBase):
                 }
                 if indices:
                     return tuple(sorted(indices))
-        return tuple(
-            sorted(
-                {
-                    row.target.person.raw_person_index
-                    for row in self.viewer_model.issues
-                    if row.target is not None
-                    and row.target.person.raw_person_index is not None
-                }
-            )
-        )
+        return tuple(sorted(fallback or ()))
 
     def _issues_for_display(self):
-        issues = super()._issues_for_display()
-        if not hasattr(self, "camera_filter"):
-            return issues
-        return tuple(
-            row
-            for row in issues
-            if self._matches_filters(
-                row.target.address if row.target is not None else None,
-                row.target.person if row.target is not None else None,
-                row.target.keypoint if row.target is not None else None,
-                row.evidence,
-            )
-        )
+        if self.viewer_model is None or not hasattr(self, "camera_filter"):
+            return super()._issues_for_display()
+        return getattr(self, "_filtered_issue_views", ())
 
     def _matches_filters(
         self,
@@ -656,6 +654,8 @@ class Quality2DPage(_QualityPageBase):
         return True
 
     def _filtered_report_issues(self) -> tuple[QualityIssue, ...]:
+        if hasattr(self, "_filtered_report_issue_cache"):
+            return self._filtered_report_issue_cache
         return tuple(
             issue
             for issue in getattr(self, "_two_dimensional_issues", ())
@@ -667,16 +667,90 @@ class Quality2DPage(_QualityPageBase):
             )
         )
 
+    def _rebuild_filtered_cache(self) -> None:
+        if self.viewer_model is None:
+            self._filtered_issue_views = ()
+            self._filtered_report_issue_cache = ()
+            return
+        camera = self.camera_filter.currentData()
+        raw_person_index = self.person_filter.currentData()
+        keypoints = self._selected_keypoints()
+        first_frame = self.frame_start_filter.value()
+        last_frame = self.frame_end_filter.value()
+        confidence_mode = self.confidence_operator.currentData()
+        threshold = self.confidence_threshold.value()
+        views = []
+        issues = []
+        for issue, row in zip(self._two_dimensional_issues, self.viewer_model.issues):
+            target = row.target
+            address = target.address if target is not None else None
+            person = target.person if target is not None else None
+            keypoint = target.keypoint if target is not None else None
+            if not self._matches_filter_values(
+                address,
+                person,
+                keypoint,
+                row.evidence,
+                camera,
+                raw_person_index,
+                keypoints,
+                first_frame,
+                last_frame,
+                confidence_mode,
+                threshold,
+            ):
+                continue
+            views.append(row)
+            issues.append(issue)
+        self._filtered_issue_views = tuple(views)
+        self._filtered_report_issue_cache = tuple(issues)
+
+    @staticmethod
+    def _matches_filter_values(
+        address,
+        person,
+        keypoint_address,
+        evidence: Mapping[str, object],
+        camera: object,
+        raw_person_index: object,
+        keypoints: set[str],
+        first_frame: int,
+        last_frame: int,
+        confidence_mode: object,
+        threshold: float,
+    ) -> bool:
+        if camera is not None and (address is None or address.camera != camera):
+            return False
+        if raw_person_index is not None and (
+            person is None or person.raw_person_index != raw_person_index
+        ):
+            return False
+        if keypoints and (
+            keypoint_address is None
+            or keypoint_address.keypoint_name not in keypoints
+        ):
+            return False
+        if first_frame > 0 or last_frame < 2_147_483_647:
+            if address is None or not first_frame <= address.frame <= last_frame:
+                return False
+        confidence = evidence.get("confidence")
+        if confidence_mode == "at_most":
+            return _is_number(confidence) and float(confidence) <= threshold
+        if confidence_mode == "at_least":
+            return _is_number(confidence) and float(confidence) >= threshold
+        return True
+
     def _apply_filters(self, *_ignored: object) -> None:
         if self.viewer_model is None or not hasattr(self, "camera_filter"):
             return
         self._issue_page = 0
+        self._rebuild_filtered_cache()
         self._fill_issues()
-        shown = len(self._issues_for_display())
+        shown = len(self._filtered_issue_views)
         self.location_status.setText(
             f"筛选后显示 {shown}/{len(self.viewer_model.issues)} 个问题；已同步刷新二维修正的问题列表。"
         )
-        self.issues_filtered.emit(self._filtered_report_issues())
+        self.issues_filtered.emit(self._filtered_report_issue_cache)
 
     def _mark_filters_dirty(self, *_ignored: object) -> None:
         if self.viewer_model is None or not hasattr(self, "apply_filters_button"):

@@ -111,12 +111,13 @@ class FrameProviderSourceTests(unittest.TestCase):
             project.save_manifest()
             provider = _RecordingProvider()
             window = MainWindow(frame_provider=provider)
+            try:
+                self.assertTrue(window.open_project(project))
 
-            self.assertTrue(window.open_project(project))
-
-            self.assertIn("request", provider.events)
-            self.assertLess(provider.events.index("set_project"), provider.events.index("request"))
-            window.close()
+                self.assertTrue(self._wait_for(lambda: "request" in provider.events))
+                self.assertLess(provider.events.index("set_project"), provider.events.index("request"))
+            finally:
+                window.close()
 
 
 if __name__ == "__main__":

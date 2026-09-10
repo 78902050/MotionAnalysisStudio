@@ -1,6 +1,7 @@
 import os
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -86,6 +87,15 @@ class QualityPageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
+
+    def _wait_for_project_results(self, window: MainWindow) -> None:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            if not window._project_loading_project_id:
+                return
+            time.sleep(0.01)
+        self.fail("项目结果索引未在限定时间内完成")
 
     def test_pages_are_real_scrollable_widgets_at_supported_window_sizes(self) -> None:
         for page_class in (Quality2DPage, Quality3DPage):
@@ -316,6 +326,7 @@ class QualityPageTests(unittest.TestCase):
             QualityReportStore(project).save(_report(_locatable_issue()))
             window = MainWindow()
             self.assertTrue(window.open_project(project, dirty_decision="discard"))
+            self._wait_for_project_results(window)
             updated = QualityReport(
                 "quality-report-v8",
                 "2026-09-05T12:00:00+00:00",
@@ -405,6 +416,7 @@ class QualityPageTests(unittest.TestCase):
             window = MainWindow()
 
             self.assertTrue(window.open_project(project))
+            self._wait_for_project_results(window)
             quality_page = window._pages["quality_3d"]
             self.assertIsInstance(quality_page, Quality3DPage)
             quality_page.issue_table.cellClicked.emit(0, 0)
@@ -501,6 +513,7 @@ class QualityPageTests(unittest.TestCase):
             window = MainWindow()
             try:
                 self.assertTrue(window.open_project(project))
+                self._wait_for_project_results(window)
                 correction = window._pages["correction_2d"]
                 self.assertEqual(correction.issue_list.count(), 2)
                 quality_page = window._pages["quality_2d"]

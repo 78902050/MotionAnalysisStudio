@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 
 from .import_model import ArtifactSummary, ConfigState, TrialCandidate
@@ -18,24 +19,64 @@ class ExistingResultDiscovery:
     def pose_frame_inventory(
         root: Path,
         layer: str = "pose",
+        *,
+        cancelled: Callable[[], bool] | None = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> dict[str, tuple[int, ...]]:
+        """Return available frame numbers without opening any pose JSON files.
+
+        Project opening only needs file names at this point.  ``os.scandir``
+        avoids creating a ``Path`` object for every frame and the optional
+        callbacks let a background caller keep cancellation and progress
+        responsive while indexing a long trial.
+        """
         if layer not in {"pose", "pose-sync", "pose-associated"}:
             raise ValueError(f"unsupported pose layer: {layer}")
         directory = Path(root).resolve() / layer
         inventory: dict[str, tuple[int, ...]] = {}
         if not directory.is_dir():
             return inventory
-        for camera_directory in sorted(directory.glob("*_json")):
-            if not camera_directory.is_dir():
-                continue
-            camera = camera_directory.name.removesuffix("_json")
+        try:
+            with os.scandir(directory) as entries:
+                cameras = sorted(
+                    entry.name
+                    for entry in entries
+                    if entry.is_dir() and entry.name.endswith("_json")
+                )
+        except OSError:
+            return inventory
+        total = len(cameras)
+        for camera_number, directory_name in enumerate(cameras, start=1):
+            if cancelled is not None and cancelled():
+                return inventory
+            camera = directory_name.removesuffix("_json")
+            if progress_callback is not None:
+                progress_callback(camera_number, total, camera)
             prefix = f"{camera}_"
             frames: set[int] = set()
-            for path in camera_directory.glob(f"{camera}_*.json"):
-                suffix = path.stem[len(prefix) :]
-                frame_token = suffix.split("_", 1)[0]
-                if frame_token.isdigit():
-                    frames.add(int(frame_token))
+            camera_directory = directory / directory_name
+            try:
+                with os.scandir(camera_directory) as entries:
+                    for entry_number, entry in enumerate(entries, start=1):
+                        if (
+                            entry_number % 256 == 0
+                            and cancelled is not None
+                            and cancelled()
+                        ):
+                            return inventory
+                        name = entry.name
+                        if (
+                            not entry.is_file()
+                            or not name.startswith(prefix)
+                            or not name.endswith(".json")
+                        ):
+                            continue
+                        suffix = name[len(prefix) : -len(".json")]
+                        frame_token = suffix.split("_", 1)[0]
+                        if frame_token.isdigit():
+                            frames.add(int(frame_token))
+            except OSError:
+                continue
             if frames:
                 inventory[camera] = tuple(sorted(frames))
         return inventory

@@ -172,7 +172,12 @@ class AssociationPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
-    def set_project(self, project: ProjectManager | None) -> None:
+    def set_project(
+        self,
+        project: ProjectManager | None,
+        *,
+        load_existing: bool = True,
+    ) -> None:
         if self._materialize_handle is not None:
             self._materialize_handle.cancel()
         self._materialize_timer.stop()
@@ -189,12 +194,38 @@ class AssociationPage(QWidget):
         if project is None:
             self.status.setText("请先打开项目")
             return
-        inventory = ExistingResultDiscovery.pose_frame_inventory(
-            project.root,
-            "pose-associated",
-        )
+        if not load_existing:
+            self.progress.setRange(0, 0)
+            self.progress.setFormat("正在后台读取已有 pose-associated 帧…")
+            self.progress.setVisible(True)
+            self.status.setText("正在后台读取已有关联后二维帧…")
+            return
+        inventory = ExistingResultDiscovery.pose_frame_inventory(project.root, "pose-associated")
+        self.set_existing_inventory(inventory)
+
+    def set_existing_inventory(
+        self,
+        inventory: dict[str, tuple[int, ...] | list[int]],
+    ) -> None:
+        """Apply the project-opening inventory once its background scan ends."""
+        self.progress.setVisible(False)
+        self.existing_results_table.setUpdatesEnabled(False)
+        self.existing_results_table.setRowCount(0)
         total = 0
-        for camera, frames in inventory.items():
+        for camera in sorted(inventory, key=str.casefold):
+            frames = tuple(
+                sorted(
+                    {
+                        frame
+                        for frame in inventory[camera]
+                        if isinstance(frame, int)
+                        and not isinstance(frame, bool)
+                        and frame >= 0
+                    }
+                )
+            )
+            if not frames:
+                continue
             row = self.existing_results_table.rowCount()
             self.existing_results_table.insertRow(row)
             total += len(frames)
@@ -202,6 +233,7 @@ class AssociationPage(QWidget):
                 (camera, str(len(frames)), f"{frames[0]}–{frames[-1]}")
             ):
                 self.existing_results_table.setItem(row, column, QTableWidgetItem(value))
+        self.existing_results_table.setUpdatesEnabled(True)
         self.status.setText(
             f"已读取 {total} 个关联后二维帧；点击“扫描关联候选”进行语义身份检查"
             if total

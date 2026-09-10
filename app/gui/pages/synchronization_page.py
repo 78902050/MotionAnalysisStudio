@@ -133,12 +133,45 @@ class SynchronizationPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
-    def set_project(self, project: ProjectManager | None) -> None:
+    def set_project(
+        self,
+        project: ProjectManager | None,
+        *,
+        load_analysis: bool = True,
+    ) -> None:
         self._analysis_timer.stop()
         self._analysis_handle = None
         self.analysis_progress.setVisible(False)
         self.project = project
+        if not load_analysis:
+            self.camera_selector.blockSignals(True)
+            self.camera_selector.clear()
+            if project is not None:
+                cameras = [
+                    str(item["camera_id"])
+                    for item in project.manifest.get("cameras", [])
+                    if isinstance(item, dict) and isinstance(item.get("camera_id"), str)
+                ]
+                self.camera_selector.addItems(cameras)
+            self.camera_selector.blockSignals(False)
+            self.mapping_table.setRowCount(0)
+            if project is None:
+                self.status.setText("请先打开项目")
+            else:
+                self.status.setText("正在后台解析同步映射…")
+                self.analysis_progress.setVisible(True)
+            self.refresh_mapping()
+            return
         self.refresh()
+
+    def set_loaded_analysis(self, analyzer: SynchronizationAnalyzer, report: object) -> None:
+        """Use the mapping prepared with the project instead of parsing it again."""
+        self._analysis_timer.stop()
+        self._analysis_handle = None
+        self.analysis_progress.setVisible(False)
+        self.analyzer = analyzer
+        self.mapping_table.setRowCount(0)
+        self._apply_report(report)
 
     def refresh(self) -> None:
         self.camera_selector.blockSignals(True)
@@ -171,7 +204,7 @@ class SynchronizationPage(QWidget):
             def work(token):
                 token.raise_if_cancelled()
                 analyzer = SynchronizationAnalyzer()
-                report = analyzer.analyze(project)
+                report = analyzer.analyze(project, cancelled=lambda: token.is_cancelled)
                 token.raise_if_cancelled()
                 return analyzer, report
 

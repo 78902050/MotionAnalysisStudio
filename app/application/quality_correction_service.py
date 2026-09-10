@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,13 +39,28 @@ class CorrectionResolution:
 
 
 class QualityCorrectionService:
-    def __init__(self, project: ProjectManager) -> None:
+    def __init__(
+        self,
+        project: ProjectManager,
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> None:
         self.project = project
         self.synchronization = SynchronizationAnalyzer()
-        self.synchronization_report = self.synchronization.analyze(project)
+        self.synchronization_report = self.synchronization.analyze(
+            project,
+            cancelled=cancelled,
+        )
+        self._report: QualityReport | None = None
 
     def load_report(self) -> QualityReport:
-        return QualityReportStore(self.project).load_current()
+        if self._report is None:
+            self._report = QualityReportStore(self.project).load_current()
+        return self._report
+
+    def set_report(self, report: QualityReport) -> None:
+        """Reuse the report already read by the project-loading worker."""
+        self._report = report
 
     def timeline_bounds(self) -> tuple[int, int]:
         """Return the synchronized frame range supported by the current report."""

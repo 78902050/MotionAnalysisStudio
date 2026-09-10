@@ -1,5 +1,6 @@
 """Resizable desktop shell for the motion-analysis workspace."""
 
+from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, SimpleQueue
 import re
@@ -35,7 +36,9 @@ from app.project.manager import ProjectManager
 from app.project.discovery import ExistingResultDiscovery
 from app.project.importer import ExistingResultImporter
 from app.quality.audit import QualityAuditService
-from app.tasks.base import TaskRequest
+from app.quality.model import QualityReport
+from app.quality.report_store import QualityReportStore
+from app.tasks.base import CancellationToken, TaskRequest
 from app.tasks.handle import TaskHandle
 
 from .layout import make_resizable_splitter, make_scrollable_panel
@@ -57,6 +60,7 @@ from .pages.settings_page import SettingsPage
 from .pages.tasks_page import TasksPage
 from .style import apply_style
 from .task_center import TaskStatusStrip
+from .widgets.loading_progress import LoadingProgressBar
 
 PAGE_LABELS: tuple[tuple[str, str], ...] = (
     ("project", "项目"),
@@ -95,6 +99,15 @@ class _ExistingResultScanWorker(QObject):
         self.finished.emit(candidates)
 
 
+@dataclass(frozen=True)
+class _ProjectStartupResult:
+    pose_inventory: dict[str, tuple[int, ...]]
+    associated_inventory: dict[str, tuple[int, ...]]
+    correction_service: QualityCorrectionService
+    report: QualityReport | None
+    report_reason: str
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -130,6 +143,12 @@ class MainWindow(QMainWindow):
         self._discovery_thread: QThread | None = None
         self._discovery_worker: _ExistingResultScanWorker | None = None
         self._scan_started_from_import = False
+        self._project_loading_project_id = ""
+        self._project_load_handle: TaskHandle | None = None
+        self._project_load_progress: SimpleQueue[tuple[int, int, str]] | None = None
+        self._project_load_timer = QTimer(self)
+        self._project_load_timer.setInterval(50)
+        self._project_load_timer.timeout.connect(self._poll_project_load)
         self.initial_quality_handle: TaskHandle | None = None
         self._quality_scan_progress: SimpleQueue[tuple[int, int]] | None = None
         self._quality_scan_timer = QTimer(self)
@@ -153,6 +172,8 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(8, 8, 8, 0)
         root_layout.setSpacing(8)
         root_layout.addWidget(self._build_project_bar())
+        self.project_loading_progress = LoadingProgressBar("project_loading_progress")
+        root_layout.addWidget(self.project_loading_progress)
 
         self.navigation = self._build_navigation()
         self.page_stack = QStackedWidget()
@@ -376,7 +397,11 @@ class MainWindow(QMainWindow):
             return False
         page = self._pages[page_id]
         if self.project is not None and isinstance(page, (Quality2DPage, Quality3DPage)):
-            page.set_project(self.project)
+            project_id = str(self.project.manifest.get("project_id", ""))
+            page.set_project(
+                self.project,
+                load_report=project_id != self._project_loading_project_id,
+            )
         self.page_stack.setCurrentWidget(page)
         for row in range(self.navigation_list.count()):
             item = self.navigation_list.item(row)
@@ -401,8 +426,10 @@ class MainWindow(QMainWindow):
         self.initial_quality_handle = None
         self._quality_scan_progress = None
         self._quality_scan_timer.stop()
+        self._cancel_project_load()
         self.project = project
-        self.quality_correction_service = QualityCorrectionService(project)
+        self._project_loading_project_id = str(project.manifest.get("project_id", ""))
+        self.quality_correction_service = None
         self.project_label.setText(str(project.manifest.get("name", project.root.name)))
         stages = project.manifest.get("stages", {})
         active_stage = next(
@@ -422,34 +449,23 @@ class MainWindow(QMainWindow):
         self.frame_provider.set_project(str(project.manifest["project_id"]), sources)
         synchronization_page = self._pages.get("synchronization")
         if isinstance(synchronization_page, SynchronizationPage):
-            synchronization_page.set_project(project)
+            synchronization_page.set_project(project, load_analysis=False)
         correction_page = self._pages.get("correction_2d")
+        cameras = self._project_camera_ids(project)
         if isinstance(correction_page, CorrectionPage):
             correction_page.clear_project_context()
             correction_page.set_camera_extents(camera_extents)
-            correction_page.set_timeline_range(
-                *self.quality_correction_service.timeline_bounds()
-            )
-            cameras = []
-            for record in project.manifest.get("cameras", []):
-                if not isinstance(record, dict):
-                    continue
-                camera_id = record.get("camera_id")
-                if isinstance(camera_id, str) and camera_id.strip():
-                    cameras.append(camera_id)
-            pose_inventory = ExistingResultDiscovery.pose_frame_inventory(project.root)
-            if pose_inventory:
-                correction_page.set_pose_inventory(pose_inventory)
-            else:
-                correction_page.set_pose_inventory({})
-                correction_page.set_cameras(cameras)
+            correction_page.set_pose_inventory({})
+            correction_page.set_cameras(cameras)
+            correction_page.set_timeline_range(0, 0)
+            correction_page.session_status.setText("正在后台索引已有二维帧…")
         for page_id in ("quality_2d", "quality_3d"):
             quality_page = self._pages.get(page_id)
             if isinstance(quality_page, (Quality2DPage, Quality3DPage)):
-                quality_page.set_project(project)
+                quality_page.set_project(project, load_report=False)
         association_page = self._pages.get("association")
         if isinstance(association_page, AssociationPage):
-            association_page.set_project(project)
+            association_page.set_project(project, load_existing=False)
         analysis_page = self._pages.get("analysis")
         if isinstance(analysis_page, AnalysisPage):
             analysis_page.set_project(project)
@@ -468,8 +484,226 @@ class MainWindow(QMainWindow):
         project_page = self._pages.get("project")
         if isinstance(project_page, ProjectPage):
             project_page.set_project(project)
-        self.statusBar().showMessage(f"已打开项目：{project.root}")
+        self._start_project_load(project, cameras)
+        self.statusBar().showMessage(f"已打开项目：{project.root}；正在后台准备结果索引…")
         return True
+
+    @staticmethod
+    def _project_camera_ids(project: ProjectManager) -> list[str]:
+        cameras: list[str] = []
+        for record in project.manifest.get("cameras", []):
+            if not isinstance(record, dict):
+                continue
+            camera_id = record.get("camera_id")
+            if isinstance(camera_id, str) and camera_id.strip():
+                cameras.append(camera_id)
+        return cameras
+
+    def _cancel_project_load(self) -> None:
+        """Cancel an obsolete index without tying its lifetime to a QWidget."""
+        if self._project_load_handle is not None:
+            self._project_load_handle.cancel()
+        self._project_load_handle = None
+        self._project_load_progress = None
+        self._project_load_timer.stop()
+
+    def _start_project_load(self, project: ProjectManager, _cameras: list[str]) -> None:
+        project_id = str(project.manifest["project_id"])
+        progress_queue: SimpleQueue[tuple[int, int, str]] = SimpleQueue()
+        request = TaskRequest(project_id, self.controller.generation, "project-result-index", {})
+
+        def work(token: CancellationToken) -> _ProjectStartupResult:
+            def report_progress(completed: int, message: str) -> None:
+                token.raise_if_cancelled()
+                progress_queue.put((completed, 4, message))
+
+            report_progress(0, "正在后台解析同步映射…")
+            correction_service = QualityCorrectionService(
+                project,
+                cancelled=lambda: token.is_cancelled,
+            )
+            token.raise_if_cancelled()
+            report_progress(1, "正在后台索引可浏览的二维姿态帧…")
+            pose_inventory = ExistingResultDiscovery.pose_frame_inventory(
+                project.root,
+                cancelled=lambda: token.is_cancelled,
+                progress_callback=lambda current, total, camera: report_progress(
+                    1,
+                    f"正在索引二维姿态帧：{camera}（{current}/{total} 个相机）",
+                ),
+            )
+            token.raise_if_cancelled()
+            report_progress(2, "正在后台索引已有身份关联帧…")
+            associated_inventory = ExistingResultDiscovery.pose_frame_inventory(
+                project.root,
+                "pose-associated",
+                cancelled=lambda: token.is_cancelled,
+                progress_callback=lambda current, total, camera: report_progress(
+                    2,
+                    f"正在索引关联后二维帧：{camera}（{current}/{total} 个相机）",
+                ),
+            )
+            token.raise_if_cancelled()
+            report_progress(3, "正在后台读取质量报告…")
+            report: QualityReport | None = None
+            report_reason = ""
+            try:
+                report = QualityReportStore(project).load_current()
+            except FileNotFoundError:
+                report_reason = "当前项目尚无质量报告"
+            except (OSError, ValueError, KeyError) as exc:
+                report_reason = f"质量报告无法读取：{exc}"
+            token.raise_if_cancelled()
+            return _ProjectStartupResult(
+                pose_inventory,
+                associated_inventory,
+                correction_service,
+                report,
+                report_reason,
+            )
+
+        self.project_loading_progress.begin("正在后台准备项目结果…", total=4)
+        self._project_load_progress = progress_queue
+        self._project_load_handle = self.controller.start_task(request, work)
+        self._project_load_timer.start()
+
+    def _drain_project_load_progress(self) -> None:
+        progress_queue = self._project_load_progress
+        if progress_queue is None:
+            return
+        latest: tuple[int, int, str] | None = None
+        while True:
+            try:
+                latest = progress_queue.get_nowait()
+            except Empty:
+                break
+        if latest is None:
+            return
+        completed, total, message = latest
+        self.project_loading_progress.set_progress(completed, total, message)
+        self.statusBar().showMessage(message)
+
+    @Slot()
+    def _poll_project_load(self) -> None:
+        handle = self._project_load_handle
+        if handle is None:
+            self._project_load_timer.stop()
+            return
+        self._drain_project_load_progress()
+        try:
+            result = handle.wait(0)
+        except TimeoutError:
+            return
+        self._project_load_timer.stop()
+        self._drain_project_load_progress()
+        self._project_load_handle = None
+        self._project_load_progress = None
+        project = self.project
+        if (
+            project is None
+            or not self.controller.supervisor.accepts_result(
+                result,
+                str(project.manifest["project_id"]),
+                self.controller.generation,
+            )
+        ):
+            return
+        if result.status == "succeeded" and isinstance(result.value, _ProjectStartupResult):
+            self._project_load_finished(result.value)
+        elif result.status == "failed":
+            self._project_load_failed(result.error or "未知后台错误")
+        elif result.status == "cancelled":
+            self._project_loading_project_id = ""
+            self.project_loading_progress.finish()
+
+    def _project_load_finished(self, result: _ProjectStartupResult) -> None:
+        project = self.project
+        if project is None:
+            return
+        self._project_loading_project_id = ""
+        self.project_loading_progress.finish()
+
+        correction_service = result.correction_service
+        self.quality_correction_service = correction_service
+        usable_pose_inventory = result.pose_inventory
+        usable_associated_inventory = result.associated_inventory
+        report = result.report
+        report_reason = result.report_reason
+        correction_page = self._pages.get("correction_2d")
+        cameras = self._project_camera_ids(project)
+        if isinstance(correction_page, CorrectionPage):
+            if usable_pose_inventory:
+                correction_page.set_pose_inventory(usable_pose_inventory)
+            else:
+                correction_page.set_pose_inventory({})
+                correction_page.set_cameras(cameras)
+
+        quality_scan_active = self.initial_quality_handle is not None
+        if isinstance(report, QualityReport) and not quality_scan_active:
+            if self.quality_correction_service is not None:
+                self.quality_correction_service.set_report(report)
+            for page_id in ("quality_2d", "quality_3d"):
+                quality_page = self._pages.get(page_id)
+                if isinstance(quality_page, (Quality2DPage, Quality3DPage)):
+                    quality_page.set_report(report, project.manifest)
+            if isinstance(correction_page, CorrectionPage) and not usable_pose_inventory:
+                correction_page.set_timeline_range(
+                    *(
+                        self.quality_correction_service.timeline_bounds()
+                        if self.quality_correction_service is not None
+                        else (0, 0)
+                    )
+                )
+        elif not quality_scan_active:
+            reason = report_reason or "当前项目尚无质量报告"
+            for page_id in ("quality_2d", "quality_3d"):
+                quality_page = self._pages.get(page_id)
+                if isinstance(quality_page, (Quality2DPage, Quality3DPage)):
+                    quality_page.show_report_unavailable(reason)
+            if isinstance(correction_page, CorrectionPage) and not usable_pose_inventory:
+                correction_page.session_status.setText("未发现可浏览的二维姿态帧")
+
+        association_page = self._pages.get("association")
+        if isinstance(association_page, AssociationPage):
+            association_page.set_existing_inventory(usable_associated_inventory)
+
+        synchronization_page = self._pages.get("synchronization")
+        if (
+            isinstance(synchronization_page, SynchronizationPage)
+            and isinstance(self.quality_correction_service, QualityCorrectionService)
+        ):
+            synchronization_page.set_loaded_analysis(
+                self.quality_correction_service.synchronization,
+                self.quality_correction_service.synchronization_report,
+            )
+
+        pose_frames = sum(len(frames) for frames in usable_pose_inventory.values())
+        associated_frames = sum(len(frames) for frames in usable_associated_inventory.values())
+        report_text = "质量报告已加载" if isinstance(report, QualityReport) else report_reason
+        self.statusBar().showMessage(
+            f"项目结果已准备：{pose_frames} 个二维帧，{associated_frames} 个关联帧；{report_text}"
+        )
+
+    def _project_load_failed(self, reason: str) -> None:
+        project = self.project
+        if project is None:
+            return
+        self._project_loading_project_id = ""
+        self.project_loading_progress.finish()
+        for page_id in ("quality_2d", "quality_3d"):
+            quality_page = self._pages.get(page_id)
+            if isinstance(quality_page, (Quality2DPage, Quality3DPage)):
+                quality_page.show_report_unavailable(f"项目结果索引失败：{reason}")
+        association_page = self._pages.get("association")
+        if isinstance(association_page, AssociationPage):
+            association_page.set_existing_inventory({})
+        correction_page = self._pages.get("correction_2d")
+        if isinstance(correction_page, CorrectionPage):
+            correction_page.session_status.setText(f"二维帧索引失败：{reason}")
+        synchronization_page = self._pages.get("synchronization")
+        if isinstance(synchronization_page, SynchronizationPage):
+            synchronization_page.set_project(project)
+        self.statusBar().showMessage(f"项目结果索引失败：{reason}")
 
     def _refresh_video_sources(self) -> None:
         if self.project is None:
@@ -607,10 +841,19 @@ class MainWindow(QMainWindow):
         ):
             return
         if result.status == "succeeded":
-            for page_id in ("quality_2d", "quality_3d"):
-                page = self._pages.get(page_id)
-                if isinstance(page, (Quality2DPage, Quality3DPage)):
-                    page.set_project(project)
+            report = result.value
+            if isinstance(report, QualityReport):
+                if self.quality_correction_service is not None:
+                    self.quality_correction_service.set_report(report)
+                for page_id in ("quality_2d", "quality_3d"):
+                    page = self._pages.get(page_id)
+                    if isinstance(page, (Quality2DPage, Quality3DPage)):
+                        page.set_report(report, project.manifest)
+            else:
+                for page_id in ("quality_2d", "quality_3d"):
+                    page = self._pages.get(page_id)
+                    if isinstance(page, (Quality2DPage, Quality3DPage)):
+                        page.set_project(project)
             self.statusBar().showMessage("二维质量检查已完成")
         elif result.status == "failed":
             self.statusBar().showMessage(f"二维质量检查失败：{result.error}")
@@ -621,7 +864,11 @@ class MainWindow(QMainWindow):
         service = self.quality_correction_service
         correction_page = self._pages.get("correction_2d")
         if service is None or not isinstance(correction_page, CorrectionPage):
-            self.statusBar().showMessage("请先打开质量报告所属项目")
+            self.statusBar().showMessage(
+                "项目正在后台准备二维结果，请稍候…"
+                if self.project is not None
+                else "请先打开质量报告所属项目"
+            )
             return None
         if correction_page.dirty_state().dirty:
             decision = self._ask_dirty_decision()
@@ -717,7 +964,11 @@ class MainWindow(QMainWindow):
         service = self.quality_correction_service
         correction_page = self._pages.get("correction_2d")
         if service is None or not isinstance(correction_page, CorrectionPage):
-            self.statusBar().showMessage("请先打开已有二维结果所属项目")
+            self.statusBar().showMessage(
+                "项目正在后台准备二维结果，请稍候…"
+                if self.project is not None
+                else "请先打开已有二维结果所属项目"
+            )
             return False
         if correction_page.dirty_state().dirty:
             decision = self._ask_dirty_decision()
@@ -1001,6 +1252,8 @@ class MainWindow(QMainWindow):
         pipeline_page = self._pages.get("pipeline")
         if isinstance(pipeline_page, PipelinePage):
             pipeline_page.close()
+        self._cancel_project_load()
+        self.project_loading_progress.finish()
         if self._discovery_thread is not None and self._discovery_thread.isRunning():
             self._discovery_thread.quit()
             self._discovery_thread.wait(5000)

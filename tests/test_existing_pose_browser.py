@@ -1,8 +1,10 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QComboBox
 from app.application.quality_correction_service import QualityCorrectionService
 from app.gui.main_window import MainWindow
 from app.gui.pages.correction_page import CorrectionPage
+from app.project.discovery import ExistingResultDiscovery
 from app.project.manager import ProjectManager
 
 
@@ -90,17 +93,76 @@ class ExistingPoseBrowserTests(unittest.TestCase):
                 encoding="utf-8",
             )
             window = MainWindow()
+            try:
+                self.assertTrue(window.open_project(project))
 
-            self.assertTrue(window.open_project(project))
+                page = window._pages["correction_2d"]
+                self.assertIsNone(page.session)
+                self.assertFalse(window.project_loading_progress.isHidden())
+                for _ in range(100):
+                    self.application.processEvents()
+                    if page.session is not None:
+                        break
+                    time.sleep(0.01)
 
-            page = window._pages["correction_2d"]
-            self.assertIsNotNone(page.session)
-            self.assertEqual(page.timeline.value(), 12)
-            self.assertEqual(page.person_selector.count(), 1)
-            self.assertEqual(page.keypoint_selector.count(), 26)
-            self.assertEqual(page._canvases[0].point_count, 26)
-            self.assertIn("直接浏览", page.session_status.text())
-            window.close()
+                self.assertIsNotNone(page.session)
+                self.assertEqual(page.timeline.value(), 12)
+                self.assertEqual(page.person_selector.count(), 1)
+                self.assertEqual(page.keypoint_selector.count(), 26)
+                self.assertEqual(page._canvases[0].point_count, 26)
+                self.assertIn("直接浏览", page.session_status.text())
+                self.assertTrue(window.project_loading_progress.isHidden())
+            finally:
+                window.close()
+
+    def test_switching_projects_cancels_an_old_pose_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = ProjectManager.create(root / "first", "first")
+            first.manifest["cameras"] = [{"camera_id": "cam-old"}]
+            first.save_manifest()
+            second = ProjectManager.create(root / "second", "second")
+            second.manifest["cameras"] = [{"camera_id": "cam-new"}]
+            second.save_manifest()
+            original = ExistingResultDiscovery.pose_frame_inventory
+            first_scan_started = False
+
+            def delayed_inventory(path, layer="pose", **kwargs):
+                nonlocal first_scan_started
+                if Path(path) == first.root and layer == "pose":
+                    first_scan_started = True
+                    cancelled = kwargs.get("cancelled")
+                    deadline = time.monotonic() + 1.0
+                    while time.monotonic() < deadline:
+                        if callable(cancelled) and cancelled():
+                            return {}
+                        time.sleep(0.01)
+                return original(path, layer, **kwargs)
+
+            window = MainWindow()
+            try:
+                with patch.object(
+                    ExistingResultDiscovery,
+                    "pose_frame_inventory",
+                    side_effect=delayed_inventory,
+                ):
+                    self.assertTrue(window.open_project(first))
+                    deadline = time.monotonic() + 1.0
+                    while not first_scan_started and time.monotonic() < deadline:
+                        self.application.processEvents()
+                        time.sleep(0.01)
+                    self.assertTrue(first_scan_started)
+                    self.assertTrue(window.open_project(second, dirty_decision="discard"))
+                    deadline = time.monotonic() + 2.0
+                    while window._project_loading_project_id and time.monotonic() < deadline:
+                        self.application.processEvents()
+                        time.sleep(0.01)
+
+                self.assertFalse(window._project_loading_project_id)
+                page = window._pages["correction_2d"]
+                self.assertEqual(page.camera_selector.currentText(), "cam-new")
+            finally:
+                window.close()
 
 
 if __name__ == "__main__":
